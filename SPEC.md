@@ -33,6 +33,33 @@ Out of scope: Modifying or altering API requests/responses in flight; persistent
 - [ ] Tool calls are visually linked to their corresponding tool result payload.
 - [ ] Request components (system, tools, messages) are visually distinct.
 
+## Architecture (decided after build 1)
+- Single command: `python dashboard.py` (stdlib only). It imports `proxy.py` (reuse its SKIP list and `--upstream`/`--port` flags; do not edit `proxy.py`), listens on 8041 as the proxy and serves the UI on 8050. `proxy.py` stays runnable on its own.
+- The frontend is one `dashboard.html` file, no CDN. Live updates use HTTP polling every 1 s; a streaming reply updates while it is still arriving.
+- Forwarding must stay byte-for-byte; recording must never break or delay the agent's call.
+- Records are in memory only, with a "Clear" button.
+- Security: never store, send to the browser, or display `authorization` / `x-api-key` header values. Headers are not shown at all.
+
+## Definition of "error" (decided after build 1)
+An error is flagged **on the request where it is visible**, with the reason shown:
+1. HTTP status >= 400 or upstream connection failure (flag on that exchange);
+2. a `tool_result` with `is_error: true` (flag on the request that *carries* the result);
+3. an `error` event in the streamed reply.
+A request is NOT an error just because its tool call will later fail. The paired tool call in the earlier reply is shown as "failed" once the result arrives.
+
+## Tool pairing
+Match `tool_use.id` to `tool_result.tool_use_id`. In a reply, each tool call shows its input and, when it arrives, its result (with a link to the request that carries it); before that, "result pending".
+
+## Acceptance Criteria
+- [ ] Intercepted requests appear in the dashboard automatically as they occur (within ~2 s), newest first.
+- [ ] Users can expand and collapse system instructions, tool definitions, and JSON objects; long text is collapsed by default.
+- [ ] Tool calls are visually linked to their corresponding tool result payload.
+- [ ] Request components (system, tools, history, new message) are visually distinct.
+- [ ] Errors-only and tool-name filters work; filters never hide the detail of a visible request.
+- [ ] Each request shows input/output tokens (cache reads separately), latency, estimated cost (unknown model -> "n/a", not 0).
+- [ ] Each request shows what is new since the previous request (new messages; system/tools changed).
+- [ ] Verifiable without a real agent: a scripted session of 4 requests (text + tool call, tool result, failed tool result, HTTP 429) produces 4 cards, 1 paired success, 1 failed pairing, and 2 error-flagged cards (the carrier of the failed result and the 429).
+
 ## Open Decisions
-- Should live updates use WebSockets or simple HTTP polling from `proxy.py`?
-- How best to highlight request-to-request diffs (showing what changed since the previous request)?
+- Whether to add WebSockets/SSE later (polling is sufficient for now).
+- Cost rates are hard-coded estimates; should they be configurable?
