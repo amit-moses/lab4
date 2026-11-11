@@ -60,6 +60,13 @@ Match `tool_use.id` to `tool_result.tool_use_id`. In a reply, each tool call sho
 - [ ] Each request shows what is new since the previous request (new messages; system/tools changed).
 - [ ] Verifiable without a real agent: a scripted session of 4 requests (text + tool call, tool result, failed tool result, HTTP 429) produces 4 cards, 1 paired success, 1 failed pairing, and 2 error-flagged cards (the carrier of the failed result and the 429).
 
+## Rendering and robustness rules (decided after build 2 review)
+- The UI must never print raw programming artifacts: no `[object ...]`, `null`, `undefined`, `false` or `NaN` in the page. (Build 1 showed `[object HTMLSpanElement]` and `false` in every card header; a syntax check did not catch it, only a screenshot did.)
+- "New since previous" is computed from the common prefix of messages. It is never negative; if the history is not an extension of the previous request (new session, subagent, compaction) show "history diverged" instead of a count.
+- The tool-error flag goes on the first request that carries the result; later requests repeat the full history and are not flagged.
+- Deliver a runnable check, `scripted_session.py`, that starts a fake upstream and the dashboard on spare ports, sends the 4-request scripted session and asserts the acceptance results, then stops what it started.
+- Verify the page by loading it in a real (headless) browser, not only with a JS syntax check.
+
 ## Open Decisions
 - Whether to add WebSockets/SSE later (polling is sufficient for now).
 - Cost rates are hard-coded estimates; should they be configurable?
