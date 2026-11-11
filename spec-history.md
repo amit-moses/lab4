@@ -1,8 +1,10 @@
 # Spec history — Lab 4 (Agent Traffic Monitor)
 
-Source: `git log -p SPEC.md` (3 commits). Times are the real commit times.
+Source: `git log -p SPEC.md` (4 commits). Times are the real commit times (18:25, 18:42, 18:49, 19:08).
 
-**How this session was run (stated plainly):** the agent did the build and test work, so the loop took about 25 minutes of wall-clock time (18:25–18:49), well under the 70-minute lab slot. It is two from-scratch builds, not a longer series. The builds were done by fresh agent sessions in empty folders containing only `SPEC.md` and `proxy.py`. No real Claude Code traffic was captured in this session (no `claude` CLI on this machine); all test traffic came from a scripted mock upstream (`tools/mock_upstream.py`) that imitates the Anthropic streaming format.
+**Update:** after the two builds I also ran build 2 on real Claude Code traffic (claude.exe in `-p` mode, prompt "read note.txt", routed through the dashboard on port 8041; 4 requests). That is commit 4 and the real findings below.
+
+**How this session was run (stated plainly):** the agent did the build and test work, so the loop took about 25 minutes of wall-clock time (18:25–18:49), well under the 70-minute lab slot. It is two from-scratch builds, not a longer series. The builds were done by fresh agent sessions in empty folders containing only `SPEC.md` and `proxy.py`. Builds 1 and 2 were tested on a scripted mock upstream (`tools/mock_upstream.py`) that imitates the Anthropic streaming format; real Claude Code traffic was captured afterwards (see below).
 
 ## Commit 1 — `18c7880` (18:25) Initial SPEC.md
 - **Changed:** the spec prepared before the lab (goal, behavior, constraints, design decisions, acceptance criteria, two open decisions: WebSocket vs polling, how to show diffs).
@@ -27,12 +29,24 @@ Source: `git log -p SPEC.md` (3 commits). Times are the real commit times.
 - **Why:** these were build 1's defects, and build 2 handled them by luck of its own choices rather than because the spec required it.
 - **Not rebuilt** after this commit.
 
+## Real-traffic run of build 2 → what it showed
+- The dashboard handled real traffic: 4 requests, tool call and result paired (`Read: ok`), cache and cost numbers filled in, no errors, no raw artifacts. Screenshot: `builds/shots/real_claude_code.png`.
+- Weakness found: request #3 shows "system changed, tools changed" only because the unrelated title call (#2) came just before it; the diff compares with the previous request, not with the previous request of the same thread. HEAD and the title call look like ordinary requests.
+
+## Commit 4 — real-traffic rules (see SPEC.md)
+- **Changed:** side calls must be labelled and excluded from the diff baseline; per-request size breakdown (system/tools/messages); cache write/read and cost-estimate caveat; `role: "system"` and `<system-reminder>` blocks shown as their own kind.
+- **Why:** the real run above. **Not rebuilt** after this commit.
+
 ## Switch to editing
 No switch: both builds were from scratch. The final build is build 2, unedited (copied to `final-build/`).
 
 ## Findings in the traffic
-Observed in the mock traffic only (not real Claude Code traffic; real findings must be added after running a real agent):
-- A tool result arrives one request *after* the tool call, so a pairing has to be rebuilt from later requests. Every later request repeats the whole history, so naive error flagging marks the same failure again and again.
-- Each request resends the full system prompt and tool list; most of the payload is repeated, which is why "what is new" matters more than raw size.
-- A failing tool (`is_error`) still returns HTTP 200; only the content shows the problem. HTTP-level errors (429) look different and carry no usage numbers, so cost must be "n/a", not 0.
-- Streamed tool input arrives as partial JSON fragments and has to be assembled before it can be shown.
+Real Claude Code traffic (one `-p` run, 4 requests; model `claude-sonnet-5-5`):
+1. **Not one conversation.** Before the real work Claude Code sent `HEAD /api/hello` (a connectivity check) and a separate small call (about 4 KB, no tools, its own system prompt) that asked the model to title the session; the reply was `{"title":"Contents of note.txt"}`. Only requests #3 and #4 were the agent loop.
+2. **The tools dominate the payload.** The main request had 37 tool definitions: about 140 KB of a 173 KB request (81%), against only 6 KB of system prompt. The same block is resent in every request.
+3. **Prompt caching decides the cost.** Request #3 wrote 60,309 tokens to the cache (estimated $0.227); request #4 read the same 60,309 tokens back (estimated $0.019), about 12x cheaper. Only 2 uncached input tokens were billed in each. The system blocks carry `cache_control` with a 1-hour TTL. (Costs use the dashboard's hard-coded rates, so they are estimates.)
+4. **The user prompt is wrapped.** The first user message holds two injected `<system-reminder>` blocks (account context and commit attribution rules) before the actual prompt, and the messages array contains a `role: "system"` entry with environment info.
+5. **Tool pairing in the wild.** The `Read` call in reply #3 came back as a `tool_result` in request #4 (`1	hello from lab 4`, line-numbered), a one-request delay, as the spec assumed. #4 carried the whole history again plus the result.
+6. **Request settings worth seeing:** `max_tokens` 128000, `thinking: adaptive` (with display omitted) and a `context_management` field appear on the main calls but not on the title call.
+
+Mock-traffic observations that still hold: failed tools return HTTP 200 (only the content shows the error); HTTP errors such as 429 carry no usage numbers, so cost must be "n/a".

@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Agent Traffic Monitor</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--fg:#1c2330;--mut:#667085;--bd:#d9dde5;--sys:#7c3aed;--tools:#0891b2;--user:#2563eb;--asst:#16a34a;--err:#dc2626;--pair:#d97706;--code:#f1f3f6}
+@media(prefers-color-scheme:dark){:root{--bg:#12151b;--card:#1a1f28;--fg:#e6e9ef;--mut:#8b94a5;--bd:#2c3340;--sys:#a78bfa;--tools:#22d3ee;--user:#60a5fa;--asst:#4ade80;--err:#f87171;--pair:#fbbf24;--code:#232a35}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif}
+header{position:sticky;top:0;z-index:5;background:var(--card);border-bottom:1px solid var(--bd);padding:8px 16px;display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+header h1{font-size:16px;margin:0 8px 0 0}input[type=text]{padding:4px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg);width:200px}
+button{border:1px solid var(--bd);background:var(--card);color:var(--fg);border-radius:6px;padding:3px 9px;cursor:pointer}
+#totals{margin-left:auto;color:var(--mut);font-size:13px}
+main{padding:12px 16px;max-width:1200px;margin:auto}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:8px;margin-bottom:8px}
+.card.err{border-left:4px solid var(--err)}
+.head{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:8px 12px;cursor:pointer}
+.head:hover{background:var(--code)}
+.badge{font-size:12px;padding:1px 7px;border-radius:10px;border:1px solid var(--bd);color:var(--mut);white-space:nowrap}
+.badge.tool{border-color:var(--tools);color:var(--tools)}.badge.e{border-color:var(--err);color:var(--err);font-weight:600}
+.badge.live{border-color:var(--asst);color:var(--asst)}.badge.diff{border-color:var(--pair);color:var(--pair)}
+.id{font-weight:700}.body{padding:0 12px 12px;border-top:1px solid var(--bd)}
+.sec{border:1px solid var(--bd);border-left:4px solid var(--c);border-radius:6px;margin:10px 0;background:var(--card)}
+.sec>summary,.sub>summary{cursor:pointer;padding:6px 10px;font-weight:600}
+.sec>summary{color:var(--c)}.sec>.in{padding:4px 10px 10px}
+.sub{border:1px solid var(--bd);border-radius:5px;margin:6px 0}.sub>summary{font-weight:500;font-size:13px}.sub>.in{padding:2px 10px 8px}
+pre{background:var(--code);padding:8px;border-radius:5px;overflow:auto;margin:4px 0;white-space:pre-wrap;word-break:break-word;font:12.5px/1.4 ui-monospace,Consolas,monospace;max-height:520px}
+.msg{border-left:4px solid var(--c);padding:4px 10px;margin:8px 0;background:var(--bg);border-radius:0 5px 5px 0}
+.msg.new{box-shadow:0 0 0 2px var(--pair)}.role{font-weight:700;color:var(--c);font-size:12px;text-transform:uppercase}
+.pair{border:2px solid var(--pair);border-radius:6px;padding:4px 8px;margin:6px 0}.pair.bad{border-color:var(--err)}
+.pair a{color:var(--pair);cursor:pointer;text-decoration:underline;font-size:12px}
+.mut{color:var(--mut);font-size:12px}.hl{outline:3px solid var(--pair)}
+.k{font-weight:600}.empty{color:var(--mut);padding:30px;text-align:center}
+</style></head><body>
+<header>
+<h1>Agent Traffic Monitor</h1>
+<input type="text" id="ftool" placeholder="filter by tool name">
+<label><input type="checkbox" id="ferr"> errors only</label>
+<button id="exp">expand all</button><button id="col">collapse all</button><button id="clr">clear</button>
+<span id="totals"></span>
+</header>
+<main id="list"><div class="empty">Waiting for traffic. Point the agent at the proxy: ANTHROPIC_BASE_URL=http://localhost:8041</div></main>
+<script>
+const $=s=>document.querySelector(s);
+function h(tag,attrs,...kids){const e=document.createElement(tag);for(const k in attrs||{}){if(k==='class')e.className=attrs[k];else if(k.startsWith('on'))e[k]=attrs[k];else e.setAttribute(k,attrs[k]);}
+ for(const c of kids.flat())if(c!=null&&c!==false)e.append(c.nodeType?c:document.createTextNode(c));return e;}
+const fmt=n=>n==null?'-':n.toLocaleString();
+const sec=(title,color,open,...kids)=>{const d=h('details',{class:'sec',style:'--c:var('+color+')'},h('summary',{},title),h('div',{class:'in'},...kids));if(open)d.open=true;return d;};
+const sub=(title,open,...kids)=>{const d=h('details',{class:'sub'},h('summary',{},title),h('div',{class:'in'},...kids));if(open)d.open=true;return d;};
+const json=o=>h('pre',{},JSON.stringify(o,null,2));
+function longText(t,limit=600){t=String(t??'');if(t.length<=limit)return h('pre',{},t);
+ return h('details',{},h('summary',{class:'mut'},t.slice(0,160).replace(/\s+/g,' ')+'... ('+fmt(t.length)+' chars, click to expand)'),h('pre',{},t));}
+const blocks=m=>typeof m.content==='string'?[{type:'text',text:m.content}]:(m.content||[]);
+
+let data=[],open=new Set(),cards=new Map(),sigs=new Map(),details={};
+function cost(c){return c==null?'-':'$'+c.toFixed(c<0.01?4:3)}
+function card(s){
+ const el=h('div',{class:'card',id:'r'+s.id});const head=h('div',{class:'head'});const body=h('div',{class:'body'});
+ el.append(head,body);head.onclick=()=>toggle(s.id);return el;}
+function fillHead(el,s){
+ const head=el.firstChild;head.replaceChildren(
+  h('span',{class:'id'},'#'+s.id),h('span',{class:'mut'},s.t),
+  h('span',{},s.method+' '+s.path),
+  s.model&&h('span',{class:'badge'},s.model),
+  h('span',{class:'badge'+(s.status>=400?' e':(!s.done?' live':''))},s.status?(s.status+(s.done?'':' streaming')):'pending'),
+  s.error&&h('span',{class:'badge e'},'ERROR'),
+  s.n_messages>0&&h('span',{class:'badge'},s.n_messages+' msgs / '+s.n_tools+' tools'),
+  s.diff&&h('span',{class:'badge diff',title:'vs request #'+s.diff.vs},'+'+s.diff.new_messages+' msg'+(s.diff.system_changed?', system changed':'')+(s.diff.tools_changed?', tools changed':'')),
+  s.result_tools.map(n=>h('span',{class:'badge tool'},'result: '+n)),
+  s.calls.map(c=>h('span',{class:'badge tool'+(c.is_error?' e':'')},'call: '+c.name+(c.found?(c.is_error?' (err)':' ok'):' ...'))),
+  h('span',{class:'mut',style:'margin-left:auto'},
+   s.usage&&(s.usage.in||s.usage.out)?('in '+fmt(s.usage.in+s.usage.cache_read+s.usage.cache_write)+' / out '+fmt(s.usage.out)+(s.usage.cache_read?' (cache read '+fmt(s.usage.cache_read)+')':'')+' | '+cost(s.cost)+' | '):'',
+   s.latency!=null?s.latency.toFixed(1)+'s':'',s.ttfb!=null?' (ttfb '+s.ttfb.toFixed(1)+'s)':''));
+ el.classList.toggle('err',s.error);}
+async function toggle(id){if(open.has(id))open.delete(id);else open.add(id);await renderBody(id,true);}
+async function renderBody(id,force){
+ const el=cards.get(id);if(!el)return;const body=el.lastChild;
+ if(!open.has(id)){body.style.display='none';return;}
+ body.style.display='';const s=data.find(x=>x.id===id);const sig=JSON.stringify(s);
+ if(!force&&sigs.get(id)===sig)return;sigs.set(id,sig);
+ const wasOpen=[...body.querySelectorAll('details')].map(d=>d.open);
+ let d;try{d=await (await fetch('/api/req/'+id)).json();}catch(e){return;}
+ body.replaceChildren(...renderDetail(d));
+ if(!force)body.querySelectorAll('details').forEach((x,i)=>{if(wasOpen[i]!==undefined)x.open=wasOpen[i];});
+}
+function renderDetail(d){
+ const req=d.request||{},resp=d.response||{},out=[];
+ if(d.conn_error)out.push(h('pre',{style:'color:var(--err)'},'Cannot reach upstream: '+d.conn_error));
+ if(d.summary.diff){const f=d.summary.diff;out.push(h('div',{class:'mut',style:'margin-top:8px'},'Diff vs request #'+f.vs+': '+f.new_messages+' new message(s) (outlined), system '+(f.system_changed?'CHANGED':'unchanged')+', tools '+(f.tools_changed?'CHANGED':'unchanged')));}
+ // system
+ if(req.system!=null){const sy=typeof req.system==='string'?[{text:req.system}]:req.system;
+  out.push(sec('System instructions ('+fmt(sy.reduce((a,b)=>a+(b.text||'').length,0))+' chars)','--sys',false,sy.map((b,i)=>h('div',{},sy.length>1&&h('div',{class:'mut'},'block '+(i+1)),h('pre',{},b.text||JSON.stringify(b,null,2))))));}
+ // tools
+ if(req.tools&&req.tools.length)out.push(sec('Tool definitions ('+req.tools.length+')','--tools',false,req.tools.map(t=>sub(t.name+(t.description?' - '+t.description.split('\n')[0].slice(0,100):''),false,t.description&&longText(t.description,400),h('div',{class:'k'},'input_schema'),json(t.input_schema||t)))));
+ // messages
+ const msgs=req.messages||[];const res={},uses={};
+ msgs.forEach((m,i)=>blocks(m).forEach(b=>{if(b.type==='tool_result')res[b.tool_use_id]=[i,b];if(b.type==='tool_use')uses[b.id]=[i,b];}));
+ const firstNew=d.prev_n==null?msgs.length:d.prev_n;
+ if(msgs.length)out.push(sec('Conversation history ('+msgs.length+' messages)','--user',true,msgs.map((m,i)=>msgEl(m,i,i>=firstNew&&d.prev_n!=null,res,uses,d.names,d.summary.id))));
+ // response
+ out.push(sec('Model output'+(d.summary.done?'':' (streaming...)')+(resp.stop_reason?' - stop: '+resp.stop_reason:''),'--asst',true,respEl(d,resp)));
+ if(resp.error)out.push(h('pre',{style:'color:var(--err)'},'Error: '+resp.error));
+ out.push(sec('Raw JSON','--tools',false,sub('request',false,json(req)),sub('response (parsed)',false,json(resp))));
+ return out;}
+function jump(id){const e=document.getElementById(id);if(e){e.scrollIntoView({block:'center'});e.classList.add('hl');setTimeout(()=>e.classList.remove('hl'),1500);}}
+function msgEl(m,i,isNew,res,uses,names,rid){
+ const c=m.role==='user'?'--user':'--asst';
+ const el=h('div',{class:'msg'+(isNew?' new':''),style:'--c:var('+c+')'},h('div',{class:'role'},m.role+' #'+i+(isNew?' NEW':'')));
+ for(const b of blocks(m)){
+  if(b.type==='text')el.append(longText(b.text));
+  else if(b.type==='thinking')el.append(sub('thinking',false,longText(b.thinking)));
+  else if(b.type==='tool_use'){const r=res[b.id];
+   el.append(h('div',{class:'pair'+(r&&r[1].is_error?' bad':''),id:'u'+rid+b.id},h('div',{class:'k'},'tool call: '+b.name),json(b.input),
+    r?h('a',{onclick:()=>jump('t'+rid+b.id)},'jump to result (message #'+r[0]+')'):h('span',{class:'mut'},'no result in this request')));}
+  else if(b.type==='tool_result'){const u=uses[b.tool_use_id];const body=typeof b.content==='string'?b.content:(b.content||[]).map(x=>x.text??JSON.stringify(x)).join('\n');
+   el.append(h('div',{class:'pair'+(b.is_error?' bad':''),id:'t'+rid+b.tool_use_id},h('div',{class:'k'},'tool result'+(names[b.tool_use_id]?' for '+names[b.tool_use_id]:'')+(b.is_error?' [ERROR]':'')),
+    longText(body),u?h('a',{onclick:()=>jump('u'+rid+b.tool_use_id)},'jump to call (message #'+u[0]+')'):null));}
+  else el.append(json(b));}
+ return el;}
+function respEl(d,resp){
+ const w=h('div',{});if(!(resp.blocks||[]).length&&!resp.error)w.append(h('div',{class:'mut'},d.summary.done?'(empty reply)':'waiting for model...'));
+ for(const b of resp.blocks||[]){
+  if(b.type==='text')w.append(longText(b.text,2000));
+  else if(b.type==='thinking')w.append(sub('thinking',false,longText(b.thinking)));
+  else if(b.type==='tool_use'){const c=d.calls.find(x=>x.call.id===b.id);const r=c&&c.result;
+   w.append(h('div',{class:'pair'+(r&&r.is_error?' bad':'')},h('div',{class:'k'},'tool call: '+b.name),json(b.input),
+    r&&r.found?h('div',{},h('div',{class:'k'},'result (arrived in request #'+r.in_request+')'+(r.is_error?' [ERROR]':'')),
+      longText(typeof r.block.content==='string'?r.block.content:(r.block.content||[]).map(x=>x.text??JSON.stringify(x)).join('\n')),
+      h('a',{onclick:()=>{open.add(r.in_request);renderBody(r.in_request,true).then(()=>{const e=document.getElementById('r'+r.in_request);e&&e.scrollIntoView();});}},'open request #'+r.in_request)):
+     h('span',{class:'mut'},'result not yet received')));}
+  else w.append(json(b));}
+ return w;}
+
+function visible(s){
+ const t=$('#ftool').value.trim().toLowerCase();
+ if($('#ferr').checked&&!s.error)return false;
+ if(t&&![...s.calls.map(c=>c.name),...s.result_tools].some(n=>(n||'').toLowerCase().includes(t)))return false;
+ return true;}
+function applyFilter(){for(const s of data){const el=cards.get(s.id);if(el)el.style.display=visible(s)?'':'none';}}
+async function poll(){
+ try{data=await (await fetch('/api/list')).json();}catch(e){return;}
+ const list=$('#list');
+ if(!data.length){cards.clear();open.clear();if(!list.querySelector('.empty'))list.replaceChildren(h('div',{class:'empty'},'Waiting for traffic. Point the agent at the proxy: ANTHROPIC_BASE_URL=http://localhost:8041'));$('#totals').textContent='';return;}
+ const e=list.querySelector('.empty');if(e)e.remove();
+ for(const s of data){let el=cards.get(s.id);
+  if(!el){el=card(s);cards.set(s.id,el);el.lastChild.style.display='none';
+   list.append(el);}
+  fillHead(el,s);renderBody(s.id,false);}
+ // newest first ordering
+ const want=[...data].reverse().map(s=>cards.get(s.id));
+ if(list.children.length!==want.length||want.some((e,i)=>list.children[i]!==e))list.replaceChildren(...want);
+ applyFilter();
+ const tot=data.reduce((a,s)=>({i:a.i+(s.usage?s.usage.in+s.usage.cache_read+s.usage.cache_write:0),o:a.o+(s.usage?s.usage.out:0),c:a.c+(s.cost||0),e:a.e+(s.error?1:0)}),{i:0,o:0,c:0,e:0});
+ $('#totals').textContent=data.length+' requests | in '+fmt(tot.i)+' out '+fmt(tot.o)+' | est. $'+tot.c.toFixed(3)+' | '+tot.e+' with errors';}
+$('#ftool').oninput=applyFilter;$('#ferr').onchange=applyFilter;
+$('#exp').onclick=()=>data.forEach(s=>{open.add(s.id);renderBody(s.id,true);});
+$('#col').onclick=()=>{open.clear();data.forEach(s=>renderBody(s.id,true));};
+$('#clr').onclick=async()=>{await fetch('/api/clear');cards.clear();sigs.clear();open.clear();$('#list').replaceChildren();poll();};
+poll();setInterval(poll,1000);
+</script></body></html>
