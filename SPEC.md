@@ -57,6 +57,7 @@ Match `tool_use.id` to `tool_result.tool_use_id`. In a reply, each tool call sho
 - [ ] Request components (system, tools, history, new message) are visually distinct.
 - [ ] Errors-only and tool-name filters work; filters never hide the detail of a visible request.
 - [ ] Each request shows input/output tokens (cache reads separately), latency, estimated cost (unknown model -> "n/a", not 0).
+- [ ] A "Save PDF" button prints every currently shown request with all its sections fully expanded (print stylesheet; the user chooses "Save as PDF"); live polling pauses while printing and the previous open/closed state is restored afterwards.
 - [ ] Each request shows what is new since the previous request (new messages; system/tools changed).
 - [ ] Verifiable without a real agent: a scripted session of 4 requests (text + tool call, tool result, failed tool result, HTTP 429) produces 4 cards, 1 paired success, 1 failed pairing, and 2 error-flagged cards (the carrier of the failed result and the 429).
 
