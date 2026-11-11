@@ -27,11 +27,21 @@ pre{margin:4px 0;padding:6px 8px;background:var(--bg);border:1px solid var(--bd)
 .tc{border:1px solid var(--bd);border-left:4px solid var(--warn);border-radius:4px;padding:4px 8px;margin:4px 0;background:var(--card)}
 .tc.ok{border-left-color:var(--out)}.tc.failed{border-left-color:var(--err)}.tc.res{border-left-color:var(--tools)}
 a.lnk{color:var(--new);cursor:pointer;text-decoration:underline}.empty{text-align:center;color:var(--mut);padding:40px}
+@media print{
+ :root{--bg:#fff;--card:#fff;--fg:#000;--mut:#555;--bd:#ccc;--code:#f6f7f9}
+ body{background:#fff;font-size:11px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+ header{position:static;border:0;padding:0 0 6px}header label,header button{display:none}
+ #totals{margin-left:12px}main{max-width:none;padding:0}
+ .card{break-inside:avoid-page}.card.flash{outline:0}.preview{white-space:normal}
+ pre{max-height:none;overflow:visible}
+ body.printall .card .body{display:block}
+ body.printall summary .mut{display:none}
+}
 </style></head><body>
 <header><h1>Agent Traffic Monitor</h1>
 <label><input type="checkbox" id="fErr"> errors only</label>
 <label>tool <select id="fTool"><option value="">all</option></select></label>
-<button id="clear">Clear</button><span id="totals"></span></header>
+<button id="clear">Clear</button><button id="pdf" title="Print every shown request with all its details expanded; choose Save as PDF">Save PDF</button><span id="totals"></span></header>
 <main id="list"><div class="empty">Waiting for traffic. Run the agent with ANTHROPIC_BASE_URL pointing at the proxy.</div></main>
 <script>
 "use strict";
@@ -39,7 +49,7 @@ const $=s=>document.querySelector(s);
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const openCards=new Set(), openKeys=new Set();
 const cards=new Map(); // id -> {el, sig, detailSig}
-let records=[], tools=new Set();
+let records=[], tools=new Set(), printing=false;
 
 const fmtN=n=>n==null?"-":n.toLocaleString();
 const fmtCost=c=>c==null?"n/a":"$"+(c<0.01?c.toFixed(4):c.toFixed(3));
@@ -210,13 +220,13 @@ function render(){
 
 async function poll(){
   try{
-    const r=await fetch("/api/summary"); const j=await r.json(); records=j.records; render();
+    if(!printing){const r=await fetch("/api/summary"); const j=await r.json(); records=j.records; render();}
   }catch(e){}
   setTimeout(poll,1000);
 }
 
 document.addEventListener("toggle",e=>{
-  const k=e.target.dataset&&e.target.dataset.k; if(!k) return;
+  if(printing) return; const k=e.target.dataset&&e.target.dataset.k; if(!k) return;
   e.target.open?openKeys.add(k):openKeys.delete(k);
 },true);
 document.addEventListener("click",e=>{
@@ -230,4 +240,27 @@ document.addEventListener("click",e=>{
 $("#fErr").addEventListener("change",render);$("#fTool").addEventListener("change",render);
 $("#clear").addEventListener("click",async()=>{await fetch("/api/clear",{method:"POST"});for(const c of cards.values())c.el.remove();cards.clear();openCards.clear();records=[];render();});
 poll();
+$("#pdf").addEventListener("click",async()=>{
+  if(printing) return; printing=true;
+  const btn=$("#pdf"), label=btn.textContent, title=document.title;
+  btn.textContent="Preparing..."; btn.disabled=true;
+  let restored=false;
+  const restore=()=>{ if(restored) return; restored=true;
+    document.title=title; document.body.classList.remove("printall");
+    for(const d of document.querySelectorAll("#list details[data-k]")) d.open=openKeys.has(d.dataset.k);
+    btn.textContent=label; btn.disabled=false;
+    setTimeout(()=>{printing=false;},0); // queued toggle events are ignored
+  };
+  try{
+    // load full detail of every request that is currently shown
+    const shown=[...cards].filter(([id,c])=>c.el.style.display!=="none").map(([id])=>id);
+    await Promise.all(shown.map(id=>loadDetail(id)));
+    document.body.classList.add("printall");
+    for(const d of document.querySelectorAll("#list details")) d.open=true;
+    document.title="agent-traffic-"+new Date().toISOString().slice(0,19).replace(/[:T]/g,"-");
+    window.addEventListener("afterprint",restore,{once:true});
+    await new Promise(r=>requestAnimationFrame(()=>setTimeout(r,50)));
+    window.print();
+  }finally{ setTimeout(restore,500); }
+});
 </script></body></html>
