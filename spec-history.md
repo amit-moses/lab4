@@ -38,7 +38,7 @@ Source: `git log -p SPEC.md` (4 commits). Times are the real commit times (18:25
 - **Why:** the real run above. **Not rebuilt** after this commit.
 
 ## Switch to editing
-No switch: both builds were from scratch. The final build is build 2, unedited (copied to `final-build/`).
+The builds themselves were from scratch. The final build is build 2 (copied to `final-build/`). After the last spec commit, a **Save PDF** button (prints every shown request fully expanded) was added to `final-build/dashboard.html` by hand-editing the code, made on another computer (commit `8307a4c`, merged from branch `dashboard-save-pdf`). It is not in the spec and was not produced by a build from it; the reason is to hand in the traffic as a PDF.
 
 ## Findings in the traffic
 Real Claude Code traffic (one `-p` run, 4 requests; model `claude-sonnet-5-5`):
