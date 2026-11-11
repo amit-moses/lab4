@@ -2,6 +2,7 @@
 
 ## Show your latest build running on live traffic
 Run `python dashboard.py` in `final-build/`, open http://localhost:8050, and start Claude Code with `ANTHROPIC_BASE_URL=http://localhost:8041`. Requests appear on the page while the agent works.
+A PDF capture of the dashboard (saved with its "Save PDF" button) is attached in the email.
 
 ## Which decisions did you only discover by building?
 What counts as an "error", and how the dashboard connects to `proxy.py`. Build 1 flagged a request as an error because its tool call would fail later, and it replaced `proxy.py`. I only saw this in its output, so I put both rules into the spec.
