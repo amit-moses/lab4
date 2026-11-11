@@ -67,6 +67,13 @@ Match `tool_use.id` to `tool_result.tool_use_id`. In a reply, each tool call sho
 - Deliver a runnable check, `scripted_session.py`, that starts a fake upstream and the dashboard on spare ports, sends the 4-request scripted session and asserts the acceptance results, then stops what it started.
 - Verify the page by loading it in a real (headless) browser, not only with a JS syntax check.
 
+## Real-traffic rules (decided after running build 2 on real Claude Code traffic)
+- A real session is not one linear conversation. Claude Code also sends side calls: a `HEAD /api/hello` connectivity check and a small no-tools call that generates the session title. These must be labelled (e.g. "side call: no tools" / "connectivity check") and must not be treated as the previous request of the main conversation.
+- "New since previous" compares a request with the previous request of the same thread (same tool list / system lineage), not simply the previous request. (Build 2 reported "system changed, tools changed" for the first real main call only because the title side call came before it.)
+- Per request, show a size breakdown: bytes of system, tools and messages. (In the real session the tool definitions were about 140 KB of a 173 KB request.)
+- Cache metrics are first-class: cache write vs cache read tokens are shown separately, and the cost estimate must note that it is an estimate (cache write price depends on the cache TTL).
+- Messages may carry `role: "system"` entries and injected `<system-reminder>` text blocks inside user messages; show them as their own kind, not as plain user text.
+
 ## Open Decisions
 - Whether to add WebSockets/SSE later (polling is sufficient for now).
 - Cost rates are hard-coded estimates; should they be configurable?

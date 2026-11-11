@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Agent Traffic Monitor</title>
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--fg:#1d2330;--mut:#6b7385;--bd:#d9dde5;--sys:#7c3aed;--tools:#0d9488;--hist:#64748b;--new:#2563eb;--out:#16a34a;--err:#dc2626;--warn:#d97706;--code:#f0f2f6}
+@media(prefers-color-scheme:dark){:root{--bg:#12151c;--card:#1b2029;--fg:#e4e8f0;--mut:#8f98ab;--bd:#2f3646;--code:#252b38}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif}
+header{position:sticky;top:0;z-index:5;background:var(--card);border-bottom:1px solid var(--bd);padding:8px 16px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+header h1{font-size:16px;margin:0}header label{color:var(--mut)}select,button{font:inherit;padding:3px 8px;border:1px solid var(--bd);background:var(--card);color:var(--fg);border-radius:4px;cursor:pointer}
+#totals{color:var(--mut);margin-left:auto}main{padding:12px 16px;max-width:1100px;margin:auto}
+.card{background:var(--card);border:1px solid var(--bd);border-left:5px solid var(--out);border-radius:6px;margin-bottom:10px}
+.card.err{border-left-color:var(--err)}.card.flash{outline:2px solid var(--new)}
+.head{padding:8px 12px;cursor:pointer}.head .row1{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+.seq{font-weight:700}.mut{color:var(--mut)}.stats{display:flex;gap:14px;flex-wrap:wrap;color:var(--mut);font-size:12.5px;margin-top:3px}
+.badge{display:inline-block;padding:0 7px;border-radius:9px;font-size:12px;color:#fff;background:var(--hist)}
+.badge.err{background:var(--err)}.badge.ok{background:var(--out)}.badge.pend{background:var(--warn)}.badge.live{background:var(--new)}.badge.chg{background:var(--warn)}
+.errline{color:var(--err);font-size:13px;margin-top:3px}.preview{color:var(--mut);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.body{border-top:1px solid var(--bd);padding:8px 12px;display:none}.card.open .body{display:block}
+.sec{border-left:4px solid var(--hist);background:var(--code);border-radius:4px;padding:6px 10px;margin:8px 0}
+.sec>.t{font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px}
+.sec.sys{border-color:var(--sys)}.sec.sys>.t{color:var(--sys)}.sec.tools{border-color:var(--tools)}.sec.tools>.t{color:var(--tools)}
+.sec.hist{border-color:var(--hist)}.sec.new{border-color:var(--new)}.sec.new>.t{color:var(--new)}.sec.out{border-color:var(--out)}.sec.out>.t{color:var(--out)}
+.sec.other{border-color:var(--bd)}
+details{margin:3px 0}summary{cursor:pointer;color:var(--fg)}summary .mut{font-weight:400}
+pre{margin:4px 0;padding:6px 8px;background:var(--bg);border:1px solid var(--bd);border-radius:4px;white-space:pre-wrap;word-break:break-word;font:12px/1.4 ui-monospace,Consolas,monospace;max-height:520px;overflow:auto}
+.msg{border-top:1px dashed var(--bd);padding:4px 0}.role{font-weight:700;font-size:12px}.role.user{color:var(--new)}.role.assistant{color:var(--out)}
+.tc{border:1px solid var(--bd);border-left:4px solid var(--warn);border-radius:4px;padding:4px 8px;margin:4px 0;background:var(--card)}
+.tc.ok{border-left-color:var(--out)}.tc.failed{border-left-color:var(--err)}.tc.res{border-left-color:var(--tools)}
+a.lnk{color:var(--new);cursor:pointer;text-decoration:underline}.empty{text-align:center;color:var(--mut);padding:40px}
+</style></head><body>
+<header><h1>Agent Traffic Monitor</h1>
+<label><input type="checkbox" id="fErr"> errors only</label>
+<label>tool <select id="fTool"><option value="">all</option></select></label>
+<button id="clear">Clear</button><span id="totals"></span></header>
+<main id="list"><div class="empty">Waiting for traffic. Run the agent with ANTHROPIC_BASE_URL pointing at the proxy.</div></main>
+<script>
+"use strict";
+const $=s=>document.querySelector(s);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const openCards=new Set(), openKeys=new Set();
+const cards=new Map(); // id -> {el, sig, detailSig}
+let records=[], tools=new Set();
+
+const fmtN=n=>n==null?"-":n.toLocaleString();
+const fmtCost=c=>c==null?"n/a":"$"+(c<0.01?c.toFixed(4):c.toFixed(3));
+const fmtMs=m=>m<1000?m+" ms":(m/1000).toFixed(1)+" s";
+const tryJ=o=>{try{return JSON.stringify(o,null,2)}catch(e){return String(o)}};
+
+// ---- collapsible helpers (open state survives re-renders via data-k)
+function det(key,summary,inner){
+  return `<details data-k="${esc(key)}"${openKeys.has(key)?" open":""}><summary>${summary}</summary>${inner}</details>`;
+}
+function longText(key,text,limit=400){
+  text=String(text??"");
+  if(text.length<=limit) return `<pre>${esc(text)}</pre>`;
+  return det(key,`${esc(text.slice(0,140).replace(/\s+/g," "))}&hellip; <span class="mut">(${text.length.toLocaleString()} chars, click to expand)</span>`,`<pre>${esc(text)}</pre>`);
+}
+function jsonView(key,label,obj){
+  const s=tryJ(obj);
+  return det(key,`${esc(label)} <span class="mut">JSON, ${s.length.toLocaleString()} chars</span>`,`<pre>${esc(s)}</pre>`);
+}
+function seqLink(n){return n==null?"":`<a class="lnk" data-goto="${n}">request #${n}</a>`}
+
+// ---- tool call / result rendering
+function toolUse(key,b,links){
+  const L=links[b.id]||{};
+  const st=L.res_seq==null?"pending":(L.res_error?"failed":"ok");
+  const badge=st==="pending"?`<span class="badge pend">result pending</span>`:
+    st==="failed"?`<span class="badge err">failed</span>`:`<span class="badge ok">ok</span>`;
+  let res="";
+  if(L.res_seq!=null) res=`<div class="mut">result carried by ${seqLink(L.res_seq)}: ${esc((L.res_text||"").slice(0,200))}</div>`;
+  return `<div class="tc ${st}"><b>tool_use ${esc(b.name)}</b> ${badge} <span class="mut">${esc(b.id||"")}</span>${jsonView(key+":in","input",b.input)}${res}</div>`;
+}
+function toolResult(key,b,links){
+  const L=links[b.tool_use_id]||{};
+  const err=b.is_error;
+  const text=typeof b.content==="string"?b.content:Array.isArray(b.content)?b.content.map(x=>x&&x.type==="text"?x.text:tryJ(x)).join("\n"):tryJ(b.content);
+  return `<div class="tc res ${err?"failed":"ok"}"><b>tool_result</b> ${err?`<span class="badge err">is_error</span>`:`<span class="badge ok">ok</span>`}
+   for <b>${esc(L.name||"?")}</b> <span class="mut">${esc(b.tool_use_id||"")}</span> ${L.use_seq!=null?"called in reply of "+seqLink(L.use_seq):""}
+   ${longText(key+":t",text)}</div>`;
+}
+function block(key,b,links){
+  switch(b.type){
+    case "text": return longText(key,b.text);
+    case "thinking": return det(key,`<i>thinking</i>`,`<pre>${esc(b.thinking||"")}</pre>`);
+    case "tool_use": return toolUse(key,b,links);
+    case "tool_result": return toolResult(key,b,links);
+    default: return jsonView(key,b.type||"block",b);
+  }
+}
+function message(key,m,i,links){
+  let c=m.content, bl=typeof c==="string"?[{type:"text",text:c}]:Array.isArray(c)?c:[];
+  return `<div class="msg"><span class="role ${esc(m.role)}">#${i} ${esc(m.role)}</span>${bl.map((b,j)=>block(key+":"+j,b,links)).join("")}</div>`;
+}
+
+// ---- request / response detail
+function renderBody(id,d){
+  const s=d.summary, req=d.req, L=d.links||{}, k=x=>`${id}:${x}`;
+  let h="";
+  if(d.req_raw!=null) h+=`<div class="sec other"><div class="t">Request (non-JSON)</div><pre>${esc(d.req_raw)}</pre></div>`;
+  if(req&&typeof req==="object"){
+    const {system,tools:tl,messages,...rest}=req;
+    h+=`<div class="sec other"><div class="t">Parameters</div>${jsonView(k("params"),"model, max_tokens, ...",rest)}</div>`;
+    if(system!=null){
+      const parts=typeof system==="string"?[system]:system.map(x=>x.text??tryJ(x));
+      const total=parts.join("\n\n");
+      h+=`<div class="sec sys"><div class="t">System instructions ${s.sys_changed?'<span class="badge chg">changed</span>':""}</div>
+        ${det(k("sys"),`${parts.length} block(s), ${total.length.toLocaleString()} chars <span class="mut">(click to expand)</span>`,parts.map((p,i)=>`<pre>${esc(p)}</pre>`).join(""))}</div>`;
+    }
+    if(Array.isArray(tl)){
+      h+=`<div class="sec tools"><div class="t">Tool definitions (${tl.length}) ${s.tools_changed?'<span class="badge chg">changed</span>':""}</div>
+        ${det(k("tools"),`${tl.length} tools: <span class="mut">${esc(tl.map(t=>t.name).join(", ").slice(0,200))}</span>`,
+          tl.map((t,i)=>det(k("tool"+i),`<b>${esc(t.name)}</b> <span class="mut">${esc((t.description||"").slice(0,90))}</span>`,
+            `<pre>${esc(t.description||"")}</pre>`+jsonView(k("tool"+i+"s"),"input_schema",t.input_schema))).join(""))}</div>`;
+    }
+    if(Array.isArray(messages)){
+      const ns=s.new_start;
+      if(ns>0) h+=`<div class="sec hist"><div class="t">Conversation history (${ns} earlier message${ns>1?"s":""}${s.diverged?", history diverged from previous request":""})</div>
+        ${det(k("hist"),"show earlier messages",messages.slice(0,ns).map((m,i)=>message(k("h"+i),m,i,L)).join(""))}</div>`;
+      h+=`<div class="sec new"><div class="t">New since previous request (${messages.length-ns} message${messages.length-ns===1?"":"s"})</div>
+        ${messages.slice(ns).map((m,i)=>message(k("n"+i),m,ns+i,L)).join("")||'<span class="mut">none</span>'}</div>`;
+    }
+  }
+  // response
+  h+=`<div class="sec out"><div class="t">Model output ${s.streaming?'<span class="badge live">streaming</span>':""} ${d.stop_reason?`<span class="mut">stop: ${esc(d.stop_reason)}</span>`:""}</div>`;
+  if(s.errors.length) h+=s.errors.map(e=>`<div class="errline">${esc(e)}</div>`).join("");
+  h+=(d.output||[]).map((b,i)=>block(k("o"+i),b,L)).join("");
+  if(d.resp_raw) h+=longText(k("raw"),d.resp_raw);
+  if(!(d.output||[]).length&&!d.resp_raw&&!s.errors.length) h+=`<span class="mut">${s.done?"empty reply":"waiting for reply..."}</span>`;
+  return h+"</div>";
+}
+
+function headHtml(s){
+  const err=s.errors.length>0;
+  const st=s.status==null?`<span class="badge live">waiting</span>`:`<span class="badge ${s.status>=400?"err":"ok"}">${s.status}</span>`;
+  const calls=s.calls.map(c=>`<span class="badge ${c.state==="ok"?"ok":c.state==="failed"?"err":"pend"}" title="tool call: ${c.state}">${esc(c.name)}: ${c.state==="pending"?"result pending":c.state}</span>`).join(" ");
+  const nw=s.first?"first request":`+${s.new_count} msg${s.new_count===1?"":"s"}`+(s.sys_changed?", system changed":"")+(s.tools_changed?", tools changed":"");
+  return `<div class="row1"><span class="seq">#${s.id}</span><span class="mut">${esc(s.time)}</span>${st}
+    <span>${esc(s.method)} ${esc(s.path)}</span><span class="mut">${esc(s.model||"")}</span>${s.streaming?'<span class="badge live">streaming</span>':""} ${calls}</div>
+   ${s.errors.map(e=>`<div class="errline">&#9888; ${esc(e)}</div>`).join("")}
+   ${s.preview&&!err?`<div class="preview">${esc(s.preview)}</div>`:""}
+   <div class="stats"><span>in ${fmtN(s.in)}</span><span>out ${fmtN(s.out)}</span><span>cache read ${fmtN(s.cache_read)}</span><span>cache write ${fmtN(s.cache_write)}</span>
+   <span>latency ${fmtMs(s.latency_ms)}${s.ttfb_ms!=null?` (first byte ${fmtMs(s.ttfb_ms)})`:""}</span><span>cost ${fmtCost(s.cost)}</span><span>${esc(nw)}</span></div>`;
+}
+
+function matches(s){
+  if($("#fErr").checked&&!s.errors.length) return false;
+  const t=$("#fTool").value;
+  if(t&&!s.tools.includes(t)) return false;
+  return true;
+}
+
+async function loadDetail(id){
+  const c=cards.get(id); if(!c) return;
+  try{
+    const r=await fetch("/api/record?id="+id); if(!r.ok) return;
+    const d=await r.json();
+    c.el.querySelector(".body").innerHTML=renderBody(id,d);
+  }catch(e){}
+}
+
+function makeCard(s){
+  const el=document.createElement("div"); el.className="card"; el.id="card"+s.id;
+  el.innerHTML=`<div class="head"></div><div class="body"></div>`;
+  el.querySelector(".head").addEventListener("click",()=>{
+    const open=el.classList.toggle("open");
+    if(open){openCards.add(s.id);loadDetail(s.id);}else openCards.delete(s.id);
+  });
+  return el;
+}
+
+function render(){
+  const list=$("#list");
+  const ids=new Set(records.map(r=>r.id));
+  for(const [id,c] of cards) if(!ids.has(id)){c.el.remove();cards.delete(id);openCards.delete(id);}
+  let shown=0, prevEl=null;
+  const ordered=[...records].reverse(); // newest first
+  for(const s of ordered){
+    let c=cards.get(s.id);
+    const sig=JSON.stringify(s);
+    if(!c){c={el:makeCard(s),sig:null};cards.set(s.id,c);}
+    if(c.sig!==sig){
+      c.sig=sig;
+      c.el.querySelector(".head").innerHTML=headHtml(s);
+      c.el.classList.toggle("err",s.errors.length>0);
+      if(openCards.has(s.id)) loadDetail(s.id);
+    }
+    const vis=matches(s);
+    c.el.style.display=vis?"":"none"; if(vis) shown++;
+    // keep DOM order newest first
+    const want=prevEl?prevEl.nextSibling:list.firstChild;
+    if(c.el!==want) list.insertBefore(c.el,want);
+    prevEl=c.el;
+  }
+  const empty=list.querySelector(".empty");
+  if(records.length&&empty) empty.remove();
+  if(!records.length&&!empty){list.innerHTML=`<div class="empty">Waiting for traffic.</div>`;}
+  // totals
+  const costs=records.map(r=>r.cost), known=costs.filter(c=>c!=null).reduce((a,b)=>a+b,0);
+  const unk=costs.filter(c=>c==null).length;
+  $("#totals").textContent=`${shown}/${records.length} shown | errors ${records.filter(r=>r.errors.length).length} | est. cost ${fmtCost(known)}${unk?` (+${unk} n/a)`:""}`;
+  // tool filter options
+  const all=new Set(records.flatMap(r=>r.tools));
+  if([...all].sort().join()!==[...tools].sort().join()){
+    tools=all; const sel=$("#fTool"), cur=sel.value;
+    sel.innerHTML=`<option value="">all</option>`+[...all].sort().map(t=>`<option>${esc(t)}</option>`).join("");
+    sel.value=all.has(cur)?cur:"";
+  }
+}
+
+async function poll(){
+  try{
+    const r=await fetch("/api/summary"); const j=await r.json(); records=j.records; render();
+  }catch(e){}
+  setTimeout(poll,1000);
+}
+
+document.addEventListener("toggle",e=>{
+  const k=e.target.dataset&&e.target.dataset.k; if(!k) return;
+  e.target.open?openKeys.add(k):openKeys.delete(k);
+},true);
+document.addEventListener("click",e=>{
+  const g=e.target.closest&&e.target.closest("[data-goto]"); if(!g) return;
+  const id=+g.dataset.goto, c=cards.get(id); if(!c) return;
+  if(c.el.style.display==="none"){ $("#fErr").checked=false; $("#fTool").value=""; render(); }
+  if(!c.el.classList.contains("open")){c.el.classList.add("open");openCards.add(id);loadDetail(id);}
+  c.el.scrollIntoView({behavior:"smooth",block:"center"});
+  c.el.classList.add("flash"); setTimeout(()=>c.el.classList.remove("flash"),1500);
+});
+$("#fErr").addEventListener("change",render);$("#fTool").addEventListener("change",render);
+$("#clear").addEventListener("click",async()=>{await fetch("/api/clear",{method:"POST"});for(const c of cards.values())c.el.remove();cards.clear();openCards.clear();records=[];render();});
+poll();
+</script></body></html>
