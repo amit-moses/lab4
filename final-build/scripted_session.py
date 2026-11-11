@@ -1,120 +1,192 @@
 #!/usr/bin/env python3
-"""Acceptance check without a real agent: fake SSE upstream + 4 scripted requests.
+"""scripted_session.py: runnable acceptance check (no real agent needed).
 
-    python scripted_session.py     # starts dashboard.py itself, checks results, kills everything
+Starts a fake SSE upstream and dashboard.py on spare ports, sends a 4-request
+session (text + tool call, tool result, failed tool result, HTTP 429), asserts
+the acceptance results, then stops what it started.
+
+    python scripted_session.py [--proxy-port 19041] [--ui-port 19050] [--upstream-port 19100] [--no-browser]
 """
+from __future__ import annotations
+
+import argparse
+import http.client
 import json
+import os
+import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
-import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-UP, PROXY, UI = 8199, 8141, 8150
+HERE = os.path.dirname(os.path.abspath(__file__))
+EDGE = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+TOOLS = [{"name": "Bash", "description": "Run a shell command. " + "x" * 600,
+          "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}}},
+         {"name": "Read", "description": "Read a file", "input_schema": {"type": "object", "properties": {}}}]
+SYSTEM = "You are a coding agent. " + "SYSTEM-MARKER-LONG " * 60
 
 
-def sse(events):
-    return "".join(f"event: {e['type']}\ndata: {json.dumps(e)}\n\n" for e in events).encode()
+def sse(*events):
+    return "".join(f"event: {t}\ndata: {json.dumps(d)}\n\n" for t, d in events).encode()
 
 
-def reply(text=None, tool=None, model="claude-sonnet-4-5"):
-    ev = [{"type": "message_start", "message": {"model": model, "usage": {"input_tokens": 100, "cache_read_input_tokens": 50, "output_tokens": 1}}}]
-    i = 0
-    if text:
-        ev += [{"type": "content_block_start", "index": i, "content_block": {"type": "text", "text": ""}},
-               {"type": "content_block_delta", "index": i, "delta": {"type": "text_delta", "text": text[:5]}},
-               {"type": "content_block_delta", "index": i, "delta": {"type": "text_delta", "text": text[5:]}},
-               {"type": "content_block_stop", "index": i}]
-        i += 1
+def reply(text, tool=None, tid=None, cmd=None):
+    ev = [("message_start", {"type": "message_start", "message": {"model": "claude-sonnet-4-5", "usage": {
+        "input_tokens": 120, "output_tokens": 1, "cache_read_input_tokens": 5000, "cache_creation_input_tokens": 300}}}),
+          ("content_block_start", {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+          ("content_block_delta", {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": text}}),
+          ("content_block_stop", {"type": "content_block_stop", "index": 0})]
     if tool:
-        ev += [{"type": "content_block_start", "index": i, "content_block": {"type": "tool_use", "id": tool[0], "name": tool[1], "input": {}}},
-               {"type": "content_block_delta", "index": i, "delta": {"type": "input_json_delta", "partial_json": '{"cmd":'}},
-               {"type": "content_block_delta", "index": i, "delta": {"type": "input_json_delta", "partial_json": '"ls"}'}},
-               {"type": "content_block_stop", "index": i}]
-    ev += [{"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {"output_tokens": 20}}, {"type": "message_stop"}]
-    return sse(ev)
-
-
-N = [0]
+        ev += [("content_block_start", {"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use", "id": tid, "name": tool, "input": {}}}),
+               ("content_block_delta", {"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": '{"command": '}}),
+               ("content_block_delta", {"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": json.dumps(cmd) + "}"}}),
+               ("content_block_stop", {"type": "content_block_stop", "index": 1})]
+    ev += [("message_delta", {"type": "message_delta", "delta": {"stop_reason": "tool_use" if tool else "end_turn"}, "usage": {"output_tokens": 42}}),
+           ("message_stop", {"type": "message_stop"})]
+    return ev
 
 
 class Fake(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    n = 0
 
     def log_message(self, *a):
         pass
 
     def do_POST(self):
-        self.rfile.read(int(self.headers.get("content-length") or 0))
-        N[0] += 1
-        if N[0] == 4:
-            b = json.dumps({"type": "error", "error": {"type": "rate_limit_error", "message": "slow down"}}).encode()
+        body = self.rfile.read(int(self.headers.get("content-length") or 0))
+        Fake.n += 1
+        n = Fake.n
+        if n == 4:
+            data = json.dumps({"type": "error", "error": {"type": "rate_limit_error", "message": "slow down"}}).encode()
             self.send_response(429)
-            self.send_header("content-type", "application/json")
-            self.send_header("content-length", str(len(b)))
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
             self.end_headers()
-            self.wfile.write(b)
+            self.wfile.write(data)
             return
-        body = {1: reply("Let me look.", ("t1", "Bash")), 2: reply("Now again.", ("t2", "Read")), 3: reply("It failed.")}[N[0]]
+        evs = {1: reply("I will list the files.", "Bash", "toolu_A", "ls -la"),
+               2: reply("Now reading.", "Bash", "toolu_B", "cat missing.txt"),
+               3: reply("That failed; giving up. " + "long " * 150)}[n]
+        raw = sse(*evs)
         self.send_response(200)
-        self.send_header("content-type", "text/event-stream")
+        self.send_header("Content-Type", "text/event-stream")
         self.send_header("Connection", "close")
         self.end_headers()
-        for j in range(0, len(body), 60):
-            self.wfile.write(body[j:j + 60]); self.wfile.flush(); time.sleep(0.01)
+        for i in range(0, len(raw), 200):
+            self.wfile.write(raw[i:i + 200])
+            self.wfile.flush()
+            time.sleep(0.01)
         self.close_connection = True
 
 
-def post(msgs):
-    req = {"model": "claude-sonnet-4-5", "max_tokens": 100, "system": "You are an agent.",
-           "tools": [{"name": "Bash", "description": "run", "input_schema": {"type": "object"}}], "messages": msgs}
-    r = urllib.request.Request(f"http://127.0.0.1:{PROXY}/v1/messages", json.dumps(req).encode(),
-                               {"content-type": "application/json", "x-api-key": "SECRET-KEY-123"})
-    try:
-        return urllib.request.urlopen(r).read()
-    except urllib.error.HTTPError as e:
-        return e.read()
+def post(port, payload):
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+    c.request("POST", "/v1/messages", json.dumps(payload), {"content-type": "application/json", "x-api-key": "sk-secret-TEST"})
+    r = c.getresponse()
+    data = r.read()
+    return r.status, data
+
+
+def get(port, path):
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+    c.request("GET", path)
+    return c.getresponse().read()
+
+
+def wait_port(port, secs=15):
+    end = time.time() + secs
+    while time.time() < end:
+        try:
+            http.client.HTTPConnection("127.0.0.1", port, timeout=1).connect()
+            return
+        except OSError:
+            time.sleep(0.2)
+    raise RuntimeError(f"port {port} did not open")
 
 
 def main():
-    up = ThreadingHTTPServer(("127.0.0.1", UP), Fake)
-    threading.Thread(target=up.serve_forever, daemon=True).start()
-    dash = subprocess.Popen([sys.executable, "dashboard.py", "--port", str(PROXY), "--ui-port", str(UI),
-                             "--upstream", f"http://127.0.0.1:{UP}"], stdout=subprocess.DEVNULL)
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--proxy-port", type=int, default=19041)
+    ap.add_argument("--ui-port", type=int, default=19050)
+    ap.add_argument("--upstream-port", type=int, default=19100)
+    ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument("--hold", type=int, default=0, help="keep servers up this many seconds after the checks (manual inspection)")
+    a = ap.parse_args()
+
+    fake = ThreadingHTTPServer(("127.0.0.1", a.upstream_port), Fake)
+    threading.Thread(target=fake.serve_forever, daemon=True).start()
+    dash = subprocess.Popen([sys.executable, os.path.join(HERE, "dashboard.py"), "--port", str(a.proxy_port),
+                             "--ui-port", str(a.ui_port), "--upstream", f"http://127.0.0.1:{a.upstream_port}"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    ok = False
     try:
-        time.sleep(1.5)
-        m1 = [{"role": "user", "content": "hi"}]
-        a1 = {"role": "assistant", "content": [{"type": "text", "text": "Let me look."}, {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"cmd": "ls"}}]}
-        m2 = m1 + [a1, {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "files"}]}]
-        a2 = {"role": "assistant", "content": [{"type": "text", "text": "Now again."}, {"type": "tool_use", "id": "t2", "name": "Read", "input": {"cmd": "ls"}}]}
-        m3 = m2 + [a2, {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t2", "content": "boom", "is_error": True}]}]
-        m4 = m3 + [{"role": "assistant", "content": "It failed."}, {"role": "user", "content": "retry"}]
-        for m in (m1, m2, m3, m4):
-            post(m)
-        time.sleep(1.2)
-        s = json.load(urllib.request.urlopen(f"http://127.0.0.1:{UI}/api/summary"))["records"]
-        d = json.load(urllib.request.urlopen(f"http://127.0.0.1:{UI}/api/record?id=1"))
-        allj = json.dumps(s) + json.dumps(d)
-        calls = [c["state"] for r in s for c in r["calls"]]
-        errs = [r["id"] for r in s if r["errors"]]
-        checks = {
-            "4 cards": len(s) == 4,
-            "1 paired ok": calls.count("ok") == 1,
-            "1 failed pairing": calls.count("failed") == 1,
-            "error cards are #3 and #4": errs == [3, 4],
-            "no secret leaked": "SECRET-KEY" not in allj,
-            "tokens/cost": s[0]["in"] == 100 and s[0]["out"] == 20 and s[0]["cache_read"] == 50 and s[0]["cost"] is not None,
-            "new since previous": s[1]["new_count"] == 2 and s[3]["new_count"] == 2,
-            "tool args assembled": d["output"][1]["input"] == {"cmd": "ls"},
-        }
-        for k, v in checks.items():
-            print("PASS" if v else "FAIL", k)
-        return 0 if all(checks.values()) else 1
+        wait_port(a.proxy_port)
+        wait_port(a.ui_port)
+        base = {"model": "claude-sonnet-4-5", "system": SYSTEM, "tools": TOOLS, "max_tokens": 1000, "stream": True}
+        u1 = {"role": "user", "content": [{"type": "text", "text": "<system-reminder>be brief</system-reminder>"}, {"type": "text", "text": "list the files"}]}
+        a1 = {"role": "assistant", "content": [{"type": "text", "text": "I will list the files."},
+                                               {"type": "tool_use", "id": "toolu_A", "name": "Bash", "input": {"command": "ls -la"}}]}
+        r1 = {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_A", "content": "file1\nfile2 " + "r" * 500}]}
+        a2 = {"role": "assistant", "content": [{"type": "text", "text": "Now reading."},
+                                               {"type": "tool_use", "id": "toolu_B", "name": "Bash", "input": {"command": "cat missing.txt"}}]}
+        r2 = {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_B", "is_error": True, "content": "cat: missing.txt: No such file"}]}
+        sts = [post(a.proxy_port, {**base, "messages": m})[0] for m in
+               ([u1], [u1, a1, r1], [u1, a1, r1, a2, r2], [u1, a1, r1, a2, r2, {"role": "assistant", "content": "ok"}, {"role": "user", "content": "again"}])]
+        assert sts == [200, 200, 200, 429], sts
+        time.sleep(0.3)
+        data = json.loads(get(a.ui_port, "/api/records?since=0&epoch=0"))
+        recs = data["records"]
+        s = data["summary"]
+        assert len(recs) == 4, f"cards {len(recs)}"
+        assert s["paired_ok"] == 1 and s["failed"] == 1, s
+        flagged = [r["d"]["id"] for r in recs if r["d"]["errors"]]
+        assert flagged == [3, 4], flagged  # carrier of the failed result, and the 429
+        assert recs[1]["d"]["new"] == {"mode": "ext", "count": 2, "total": 3, "system_changed": False, "tools_changed": False, "prev": 1}, recs[1]["d"]["new"]
+        assert recs[0]["d"]["usage"]["cache_read"] == 5000 and recs[0]["d"]["cost"] is not None
+        assert "sk-secret-TEST" not in json.dumps(data), "secret leaked"
+        print("API checks passed:", s, "flagged cards:", flagged)
+
+        if not a.no_browser and os.path.exists(EDGE):
+            tmp = tempfile.mkdtemp()
+            try:
+                def dump(q):
+                    out = subprocess.run([EDGE, "--headless=new", "--disable-gpu", f"--user-data-dir={tmp}", "--virtual-time-budget=6000",
+                                          "--dump-dom", f"http://127.0.0.1:{a.ui_port}/{q}"], capture_output=True, timeout=90).stdout.decode("utf-8", "replace")
+                    return out
+                dom = dump("")
+                assert len(re.findall(r'class="card', dom)) == 4, "browser: expected 4 cards"
+                body = re.sub(r"<script.*?</script>|<style.*?</style>", " ", dom.split("<body", 1)[1], flags=re.S)
+                body = re.sub(r"<[^>]+>", " ", body)
+                for bad in ("[object", "undefined", "NaN"):
+                    assert bad not in body, f"artifact {bad!r} in page"
+                pdom = dump("?print=1")
+                for must in ("SYSTEM-MARKER-LONG", "cat: missing.txt", "ls -la", "rate_limit_error", "cache_creation_input_tokens"):
+                    assert must in pdom, f"print mode lacks {must}"
+                assert "r" * 500 in pdom
+                print("browser checks passed (4 cards, no artifacts, print mode contains hidden data)")
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+        else:
+            print("browser checks skipped")
+        ok = True
+        if a.hold:
+            print(f"holding {a.hold}s: UI http://127.0.0.1:{a.ui_port}", flush=True)
+            time.sleep(a.hold)
     finally:
-        dash.kill()
-        up.shutdown()
+        dash.terminate()
+        try:
+            dash.wait(5)
+        except subprocess.TimeoutExpired:
+            dash.kill()
+        fake.shutdown()
+    print("PASS" if ok else "FAIL")
+    sys.exit(0 if ok else 1)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

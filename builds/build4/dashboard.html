@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Traffic Monitor</title>
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--fg:#1c2128;--mut:#667085;--line:#d5d9e0;--sys:#7c3aed;--tools:#d97706;--hist:#64748b;--new:#16a34a;--out:#2563eb;--raw:#6b7280;--err:#dc2626;--ok:#16a34a;--code:#f1f3f6}
+@media (prefers-color-scheme:dark){:root:not(.printing){--bg:#14171c;--card:#1d2128;--fg:#e6e8eb;--mut:#9aa3b0;--line:#363c46;--sys:#a78bfa;--tools:#fbbf24;--hist:#94a3b8;--new:#4ade80;--out:#60a5fa;--raw:#9ca3af;--err:#f87171;--ok:#4ade80;--code:#12151a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,Segoe UI,sans-serif}
+header.top{position:sticky;top:0;z-index:5;background:var(--card);border-bottom:1px solid var(--line);padding:8px 16px;display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+header.top h1{font-size:16px;margin:0 8px 0 0}
+button,select{font:inherit;padding:3px 10px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--fg);cursor:pointer}
+label{display:inline-flex;gap:4px;align-items:center}
+#stats{color:var(--mut)}
+#stats b{color:var(--fg)}
+#note{padding:6px 16px;color:var(--mut);font-size:12px}
+#list{padding:8px 16px 40px;display:flex;flex-direction:column;gap:12px}
+#empty{padding:30px;text-align:center;color:var(--mut)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+.card.err{border-color:var(--err);box-shadow:inset 4px 0 0 var(--err)}
+.card.flash{outline:3px solid var(--out)}
+.hd{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:baseline}
+.hd .id{font-weight:700;font-size:15px}
+.chip{display:inline-block;padding:0 7px;border-radius:10px;border:1px solid var(--line);font-size:12px;color:var(--mut);white-space:nowrap}
+.chip.bad{color:var(--err);border-color:var(--err)}
+.chip.good{color:var(--ok);border-color:var(--ok)}
+.chip.pend{color:var(--tools);border-color:var(--tools);border-style:dashed}
+.metrics{color:var(--mut);font-size:12.5px;margin-top:3px}
+.metrics span{margin-right:12px}
+.errs{margin-top:4px;color:var(--err);font-weight:600}
+.newline{margin-top:4px;font-size:12.5px;color:var(--mut)}
+a.lnk{color:var(--out);cursor:pointer;text-decoration:underline}
+details.sec{margin-top:6px;border-left:4px solid var(--raw);background:var(--code);border-radius:0 6px 6px 0;padding:2px 8px}
+details.sec>summary{cursor:pointer;font-weight:600;padding:3px 0}
+details.sec.s-sys{border-left-color:var(--sys)}details.sec.s-sys>summary{color:var(--sys)}
+details.sec.s-tools{border-left-color:var(--tools)}details.sec.s-tools>summary{color:var(--tools)}
+details.sec.s-hist{border-left-color:var(--hist)}details.sec.s-hist>summary{color:var(--hist)}
+details.sec.s-new{border-left-color:var(--new)}details.sec.s-new>summary{color:var(--new)}
+details.sec.s-out{border-left-color:var(--out)}details.sec.s-out>summary{color:var(--out)}
+details.sec.s-raw>summary{color:var(--raw)}
+details.sub{margin:3px 0;border-left:2px solid var(--line);padding-left:8px}
+details.sub>summary{cursor:pointer;color:var(--mut)}
+pre{margin:2px 0;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;font:12.5px/1.4 ui-monospace,Consolas,monospace}
+pre.scroll{max-height:420px;overflow:auto;background:var(--card);padding:6px;border:1px solid var(--line);border-radius:4px}
+.msg{margin:6px 0;padding:4px 8px;border:1px solid var(--line);border-radius:6px;background:var(--card)}
+.msg>.role{font-size:11px;font-weight:700;text-transform:uppercase;color:var(--mut)}
+.msg.user{border-left:4px solid var(--new)}
+.msg.assistant{border-left:4px solid var(--out)}
+.msg.sysmsg{border-left:4px solid var(--sys)}
+.blk{margin:3px 0}
+.blk>.lab{font-size:11px;color:var(--mut);text-transform:uppercase}
+.blk.reminder{border-left:3px dotted var(--sys);padding-left:6px;background:rgba(124,58,237,.07)}
+.blk.think{opacity:.8;font-style:italic}
+.tool{margin:4px 0;padding:4px 8px;border:2px solid var(--line);border-radius:6px;background:var(--card)}
+.tool.ok{border-color:var(--ok)}.tool.failed{border-color:var(--err)}.tool.pending{border-style:dashed;border-color:var(--tools)}
+.tool>.th{display:flex;flex-wrap:wrap;gap:8px;align-items:baseline}
+.tool>.th b{font-size:13px}
+.kv{margin-left:14px}
+.k{color:var(--sys)}.s{color:var(--ok)}.p{color:var(--tools)}
+.jn{display:block}
+.printing .pv{display:none}
+.noprint{}
+@media print{
+ :root{--bg:#fff}
+ .noprint,header.top,#note{display:none!important}
+ body{background:#fff;color:#000}
+ #list{padding:0;display:block}
+ .card{break-inside:auto;margin-bottom:14px;border-color:#888}
+ pre.scroll,*{max-height:none!important;overflow:visible!important}
+ .pv{display:none}
+ a.lnk{color:inherit}
+}
+</style>
+</head>
+<body>
+<header class="top noprint">
+  <h1>Agent Traffic Monitor</h1>
+  <label><input type="checkbox" id="fErr"> Errors only</label>
+  <label>Tool <select id="fTool"><option value="">all tools</option></select></label>
+  <button id="bClear">Clear</button>
+  <button id="bPdf">Save PDF</button>
+  <span id="stats"></span>
+</header>
+<div id="note" class="noprint">Costs are estimates from hard-coded list prices; cache-write price depends on the cache TTL (5-minute rate assumed). Unknown model shows n/a. Headers are never recorded or shown.</div>
+<div id="list"></div>
+<div id="empty">Waiting for traffic. Point the agent at the proxy (ANTHROPIC_BASE_URL=http://localhost:8041).</div>
+<script>
+'use strict';
+const LONG = 400;
+const recs = new Map();       // id -> {d, raw:{req,resp}, pr:parsed request}
+const cards = new Map();      // id -> {el, sig}
+const openState = new Map();  // details key -> boolean
+let since = 0, epoch = 0, printing = false, noPoll = false, lastSig = '';
+const params = new URLSearchParams(location.search);
+
+// ---- DOM helper: never prints null/undefined/booleans/NaN
+function add(e, kids) {
+  for (const k of kids) {
+    if (k == null || k === false || k === true) continue;
+    if (Array.isArray(k)) add(e, k);
+    else if (k instanceof Node) e.append(k);
+    else if (typeof k === 'number' && !isFinite(k)) continue;
+    else e.append(document.createTextNode(String(k)));
+  }
+}
+function h(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  if (attrs) for (const [k, v] of Object.entries(attrs)) {
+    if (v == null || v === false) continue;
+    if (k === 'class') e.className = v;
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v === true ? '' : String(v));
+  }
+  add(e, kids);
+  return e;
+}
+const fmtN = n => (typeof n === 'number' && isFinite(n)) ? n.toLocaleString('en-US') : 'n/a';
+const fmtB = n => (typeof n !== 'number' || !isFinite(n)) ? 'n/a' : n < 1024 ? n + ' B' : (n / 1024).toFixed(1) + ' KB';
+const fmtS = s => (typeof s !== 'number' || !isFinite(s)) ? null : s < 1 ? Math.round(s * 1000) + ' ms' : s.toFixed(2) + ' s';
+const fmtC = c => (typeof c !== 'number' || !isFinite(c)) ? 'n/a' : '$' + (c < 0.01 ? c.toFixed(5) : c.toFixed(4));
+
+// ---- lazy collapsible sections, state kept across re-renders
+function fill(d) { if (d._built) return; d._built = true; d.append(d._build()); }
+function det(key, title, build, def, cls) {
+  const d = h('details', {class: cls || 'sub', 'data-k': key, 'data-def': def ? '1' : '0'}, h('summary', null, title));
+  d._build = build; d._built = false;
+  const want = openState.has(key) ? openState.get(key) : !!def;
+  if (want) { d.open = true; fill(d); }
+  d.addEventListener('toggle', () => { if (d.open) fill(d); if (!printing) openState.set(key, d.open); });
+  return d;
+}
+
+// ---- text and JSON views
+function longText(s, cls) {
+  s = typeof s === 'string' ? s : (s == null ? '' : JSON.stringify(s, null, 2));
+  if (s.length <= LONG) return h('pre', {class: cls}, s);
+  const wrap = h('div', {class: 'lt'});
+  wrap.append(h('pre', {class: 'pv ' + (cls || '')}, s.slice(0, LONG) + '...'));
+  const d = h('details', {class: 'sub', 'data-k': 'lt', 'data-def': '0'}, h('summary', null, 'show full text (' + fmtN(s.length) + ' chars)'));
+  d._build = () => h('pre', {class: cls}, s); d._built = false;
+  d.addEventListener('toggle', () => { if (d.open) fill(d); });
+  wrap.append(d);
+  return wrap;
+}
+function jsonTree(v, key, depth) {
+  depth = depth || 0;
+  if (v === null) return h('span', {class: 'p'}, 'null');
+  if (typeof v === 'string') return v.length > LONG ? longText(v) : h('span', {class: 's'}, JSON.stringify(v));
+  if (typeof v !== 'object') return h('span', {class: 'p'}, String(v));
+  const arr = Array.isArray(v), keys = Object.keys(v);
+  if (!keys.length) return h('span', null, arr ? '[]' : '{}');
+  const d = h('details', {class: 'sub', 'data-k': key + '/' + depth, 'data-def': depth < 1 ? '1' : '0'},
+    h('summary', null, arr ? '[ ' + keys.length + ' items ]' : '{ ' + keys.length + ' keys }'));
+  const body = () => {
+    const box = h('div', {class: 'kv'});
+    for (const k of keys) box.append(h('div', {class: 'jn'}, h('span', {class: 'k'}, arr ? '[' + k + ']' : k), ': ', jsonTree(v[k], key + '.' + k, depth + 1)));
+    return box;
+  };
+  d._build = body; d._built = false;
+  if (depth < 1) { d.open = true; fill(d); }
+  d.addEventListener('toggle', () => { if (d.open) fill(d); });
+  return d;
+}
+
+// ---- links
+function jump(id) {
+  if (!cards.has(id)) return;
+  if (cards.get(id).el.hidden) { $('#fErr').checked = false; $('#fTool').value = ''; render(); }
+  const el = cards.get(id).el;
+  el.scrollIntoView({block: 'start'});
+  el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1500);
+}
+const link = id => h('a', {class: 'lnk', href: '#r' + id, onclick: e => { e.preventDefault(); jump(id); }}, 'request #' + id);
+const $ = s => document.querySelector(s);
+
+function parsedReq(rec) {
+  if (rec.pr === undefined) { try { rec.pr = JSON.parse(rec.raw.req); } catch (e) { rec.pr = null; } }
+  return rec.pr;
+}
+function findResult(carrierId, toolId) {
+  const r = recs.get(carrierId); const pr = r && r.raw ? parsedReq(r) : null;
+  if (!pr || !Array.isArray(pr.messages)) return null;
+  for (const m of pr.messages) if (Array.isArray(m.content)) for (const b of m.content)
+    if (b && b.type === 'tool_result' && b.tool_use_id === toolId) return b;
+  return null;
+}
+function resultBody(b) {
+  const c = b.content;
+  if (typeof c === 'string') return longText(c);
+  if (Array.isArray(c)) {
+    const box = h('div');
+    for (const x of c) box.append(x && x.type === 'text' ? longText(x.text) : jsonTree(x, 'res'));
+    return box;
+  }
+  return c == null ? h('span', {class: 'chip'}, 'empty result') : jsonTree(c, 'res');
+}
+
+// ---- messages
+const isReminder = t => typeof t === 'string' && t.trimStart().startsWith('<system-reminder>');
+function textBlock(t, role) {
+  if (isReminder(t)) return h('div', {class: 'blk reminder'}, h('div', {class: 'lab'}, 'injected system-reminder'), longText(t));
+  return h('div', {class: 'blk'}, h('div', {class: 'lab'}, role === 'assistant' ? 'assistant text' : role === 'system' ? 'system message' : 'user text'), longText(t));
+}
+function toolUseBox(b, d, key) {
+  const p = d.pair[b.id] || {};
+  const st = p.carrier == null ? 'pending' : p.is_error ? 'failed' : 'ok';
+  return h('div', {class: 'tool ' + st},
+    h('div', {class: 'th'}, h('span', {class: 'chip'}, 'tool call'), h('b', null, b.name || 'unknown tool'), h('span', {class: 'chip'}, b.id),
+      st === 'pending' ? h('span', {class: 'chip pend'}, 'result pending') : h('span', {class: 'chip ' + (st === 'ok' ? 'good' : 'bad')}, (st === 'ok' ? 'result ok in ' : 'failed in '), link(p.carrier))),
+    b.input !== undefined && b.input !== null ? jsonTree(b.input, key + '/in') : b.input_text ? longText(b.input_text) : null);
+}
+function toolResultBox(b, d) {
+  const p = d.pair[b.tool_use_id] || {};
+  return h('div', {class: 'tool ' + (b.is_error === true ? 'failed' : 'ok')},
+    h('div', {class: 'th'}, h('span', {class: 'chip'}, 'tool result'), h('b', null, p.name || 'unknown tool'), h('span', {class: 'chip'}, b.tool_use_id),
+      b.is_error === true ? h('span', {class: 'chip bad'}, 'is_error') : h('span', {class: 'chip good'}, 'success'),
+      p.call_rec != null ? h('span', {class: 'chip'}, 'called in reply of ', link(p.call_rec)) : h('span', {class: 'chip'}, 'call not captured')),
+    resultBody(b));
+}
+function renderMsg(m, d, key) {
+  const role = m && m.role || 'unknown';
+  const box = h('div', {class: 'msg ' + (role === 'system' ? 'sysmsg' : role === 'assistant' ? 'assistant' : 'user')}, h('div', {class: 'role'}, role === 'system' ? 'system (role: system)' : role));
+  const c = m && m.content;
+  if (typeof c === 'string') box.append(textBlock(c, role));
+  else if (Array.isArray(c)) c.forEach((b, i) => {
+    if (!b || typeof b !== 'object') { box.append(jsonTree(b, key + i)); return; }
+    if (b.type === 'text') box.append(textBlock(b.text, role));
+    else if (b.type === 'tool_use') box.append(toolUseBox(b, d, key + i));
+    else if (b.type === 'tool_result') box.append(toolResultBox(b, d));
+    else if (b.type === 'thinking') box.append(h('div', {class: 'blk think'}, h('div', {class: 'lab'}, 'thinking'), longText(b.thinking || '')));
+    else box.append(h('div', {class: 'blk'}, h('div', {class: 'lab'}, b.type || 'block'), jsonTree(b, key + i)));
+  });
+  else box.append(jsonTree(c === undefined ? {} : c, key));
+  return box;
+}
+function renderMsgs(list, d, key, offset) {
+  const box = h('div');
+  list.forEach((m, i) => box.append(h('div', null, h('span', {class: 'chip'}, 'message ' + (offset + i)), renderMsg(m, d, key + '/m' + (offset + i)))));
+  if (!list.length) box.append(h('span', {class: 'chip'}, 'none'));
+  return box;
+}
+function sysText(s) {
+  if (typeof s === 'string') return [s];
+  if (Array.isArray(s)) return s.map(b => b && typeof b.text === 'string' ? b.text : JSON.stringify(b, null, 2));
+  return s == null ? [] : [JSON.stringify(s, null, 2)];
+}
+
+// ---- card
+function newLine(d) {
+  const n = d.new, bits = [];
+  if (n.mode === 'none') return 'Not part of the main conversation thread (no comparison).';
+  if (n.mode === 'first') return 'First request of this thread: ' + n.count + ' message' + (n.count === 1 ? '' : 's') + '.';
+  if (n.mode === 'diverged') bits.push('history diverged (new session, subagent or compaction)');
+  else bits.push('+' + n.count + ' new message' + (n.count === 1 ? '' : 's') + ' (' + n.total + ' total)');
+  bits.push(n.system_changed ? 'system changed' : 'system unchanged');
+  bits.push(n.tools_changed ? 'tools changed' : 'tools unchanged');
+  return 'Since previous request of the thread (#' + n.prev + '): ' + bits.join(', ') + '.';
+}
+function buildCard(rec) {
+  const d = rec.d, k = 'c' + d.id, req = rec.raw ? parsedReq(rec) : null, u = d.usage;
+  const t = new Date(d.ts * 1000).toLocaleTimeString();
+  const status = d.status == null ? (d.upstream_error ? 'no reply' : 'pending') : String(d.status);
+  const lat = fmtS(d.latency);
+  const el = h('div', {class: 'card' + (d.errors.length ? ' err' : ''), id: 'r' + d.id});
+  el.append(h('div', {class: 'hd'},
+    h('span', {class: 'id'}, '#' + d.id), h('span', null, t), h('b', null, d.method + ' ' + d.path),
+    h('span', {class: 'chip ' + (d.status >= 400 || d.upstream_error ? 'bad' : d.status ? 'good' : 'pend')}, status),
+    h('span', {class: 'chip'}, d.label), d.model ? h('span', {class: 'chip'}, d.model) : null,
+    d.errors.length ? h('span', {class: 'chip bad'}, 'ERROR') : null));
+  const nodes = [];
+  nodes.push(h('div', {class: 'metrics'},
+    h('span', null, 'tokens in ', fmtN(u.input), ' / out ', fmtN(u.output)),
+    h('span', null, 'cache read ', fmtN(u.cache_read)), h('span', null, 'cache write ', fmtN(u.cache_write)),
+    h('span', null, 'latency ', lat || (d.done ? 'n/a' : 'streaming...'), d.ttfb != null ? ' (first byte ' + fmtS(d.ttfb) + ')' : null),
+    h('span', {title: 'estimate; cache write assumes 5-minute TTL'}, 'cost ', fmtC(d.cost), d.cost_known ? ' (est.)' : null)));
+  nodes.push(h('div', {class: 'metrics'}, h('span', null, 'size: system ', fmtB(d.sizes.system)), h('span', null, 'tools ', fmtB(d.sizes.tools)),
+    h('span', null, 'messages ', fmtB(d.sizes.messages)), h('span', null, 'total body ', fmtB(d.sizes.total))));
+  if (d.errors.length) nodes.push(h('div', {class: 'errs'}, d.errors.map(e => h('div', null, 'Error: ' + e))));
+  const nl = h('div', {class: 'newline'}, newLine(d));
+  const car = d.carries.filter(c => c.first);
+  if (car.length) { nl.append(' Carries result: '); car.forEach(c => nl.append(h('span', {class: 'chip ' + (c.is_error ? 'bad' : 'good')}, (c.name || 'tool') + (c.is_error ? ' failed' : ' ok')), ' ')); }
+  nodes.push(nl);
+  add(el, nodes);
+
+  if (req) {
+    const msgs = Array.isArray(req.messages) ? req.messages : [];
+    if (req.system !== undefined && req.system !== null) {
+      const st = sysText(req.system);
+      el.append(det(k + ':sys', 'System instructions (' + fmtB(d.sizes.system) + ')', () => { const b = h('div'); st.forEach(s => b.append(longText(s))); return b; }, false, 'sec s-sys'));
+    }
+    const tools = Array.isArray(req.tools) ? req.tools : [];
+    el.append(det(k + ':tools', 'Tool definitions (' + tools.length + ', ' + fmtB(d.sizes.tools) + ')', () => {
+      const b = h('div');
+      tools.forEach((tl, i) => b.append(det(k + ':tool' + i, [h('b', null, tl && tl.name || 'tool ' + i), tl && tl.description ? ' - ' + String(tl.description).slice(0, 100).replace(/\s+/g, ' ') : ''], () => {
+        const x = h('div'); if (tl && tl.description) x.append(longText(tl.description)); x.append(jsonTree(tl, k + ':tj' + i)); return x;
+      }, false)));
+      if (!tools.length) b.append(h('span', {class: 'chip'}, 'no tools'));
+      return b;
+    }, false, 'sec s-tools'));
+    const ns = Math.min(d.new_start, msgs.length);
+    el.append(det(k + ':hist', 'Conversation history (' + ns + ' message' + (ns === 1 ? '' : 's') + ')', () => renderMsgs(msgs.slice(0, ns), d, k + ':h', 0), false, 'sec s-hist'));
+    const nw = msgs.slice(ns);
+    el.append(det(k + ':new', 'New message' + (nw.length === 1 ? '' : 's') + ' (' + nw.length + ')', () => renderMsgs(nw, d, k + ':n', ns), true, 'sec s-new'));
+  } else el.append(h('div', {class: 'newline'}, rec.raw && rec.raw.req ? 'Request body is not JSON; see raw request.' : 'No request body.'));
+
+  // model output
+  el.append(det(k + ':out', 'Model output (' + d.calls.length + ' tool call' + (d.calls.length === 1 ? '' : 's') + ')', () => {
+    const b = h('div');
+    for (const x of d.reply.blocks) {
+      if (x.type === 'text') b.append(h('div', {class: 'blk'}, h('div', {class: 'lab'}, 'assistant text'), longText(x.text)));
+      else if (x.type === 'thinking') b.append(h('div', {class: 'blk think'}, h('div', {class: 'lab'}, 'thinking'), longText(x.text)));
+      else if (x.type === 'tool_use') {
+        const c = d.calls.find(y => y.id === x.id) || {status: 'pending'};
+        const box = h('div', {class: 'tool ' + c.status},
+          h('div', {class: 'th'}, h('span', {class: 'chip'}, 'tool call'), h('b', null, x.name || 'unknown tool'), h('span', {class: 'chip'}, x.id),
+            c.status === 'pending' ? h('span', {class: 'chip pend'}, 'result pending') : h('span', {class: 'chip ' + (c.status === 'ok' ? 'good' : 'bad')}, c.status === 'ok' ? 'result ok in ' : 'failed in ', link(c.carrier))),
+          x.input != null ? jsonTree(x.input, k + ':oi' + x.id) : x.input_text ? longText(x.input_text) : null);
+        if (c.carrier != null) {
+          const rb = findResult(c.carrier, x.id);
+          if (rb) box.append(det(k + ':res' + x.id, 'Result (carried by request #' + c.carrier + ')', () => resultBody(rb), true));
+        }
+        b.append(box);
+      } else b.append(h('div', {class: 'blk'}, h('div', {class: 'lab'}, x.type), jsonTree(x.raw || x, k + ':ox')));
+    }
+    if (!d.reply.blocks.length) b.append(h('span', {class: 'chip'}, d.done ? 'no reply content (see raw response)' : 'waiting for reply...'));
+    if (d.reply.stop) b.append(h('div', {class: 'metrics'}, 'stop reason: ' + d.reply.stop));
+    return b;
+  }, true, 'sec s-out'));
+
+  if (rec.raw) {
+    el.append(det(k + ':rawq', 'Raw request JSON', () => {
+      let s = rec.raw.req; try { s = JSON.stringify(JSON.parse(s), null, 2); } catch (e) {}
+      return h('pre', {class: 'scroll'}, s || '(empty)');
+    }, false, 'sec s-raw'));
+    el.append(det(k + ':rawr', 'Raw response' + (d.reply.format === 'sse' ? ' (SSE stream)' : ''), () => {
+      let s = rec.raw.resp; if (d.reply.format !== 'sse') try { s = JSON.stringify(JSON.parse(s), null, 2); } catch (e) {}
+      return h('pre', {class: 'scroll'}, s || '(empty)');
+    }, false, 'sec s-raw'));
+  }
+  return el;
+}
+
+// ---- list / filters
+function passes(d) {
+  if ($('#fErr').checked && !d.errors.length) return false;
+  const t = $('#fTool').value;
+  return !t || d.tool_names.includes(t);
+}
+function render() {
+  const ids = [...recs.keys()].sort((a, b) => b - a);
+  let changed = false;
+  for (const id of ids) {
+    const rec = recs.get(id), c = cards.get(id);
+    if (!c || c.sig !== rec.d.sig) {
+      const el = buildCard(rec);
+      if (c && c.el.parentNode) c.el.replaceWith(el);
+      cards.set(id, {el, sig: rec.d.sig}); changed = true;
+    }
+  }
+  for (const id of [...cards.keys()]) if (!recs.has(id)) { cards.get(id).el.remove(); cards.delete(id); }
+  const list = $('#list');
+  const order = ids.join(',');
+  if (changed || order !== lastSig) { for (const id of ids) list.append(cards.get(id).el); lastSig = order; }
+  // tool filter options
+  const names = new Set(); recs.forEach(r => r.d.tool_names.forEach(n => names.add(n)));
+  const sel = $('#fTool'), cur = sel.value, want = ['', ...[...names].sort()];
+  if (want.join('\n') !== [...sel.options].map(o => o.value).join('\n')) {
+    sel.replaceChildren(...want.map(n => h('option', {value: n}, n || 'all tools')));
+    sel.value = want.includes(cur) ? cur : '';
+  }
+  let shown = 0;
+  for (const id of ids) { const ok = passes(recs.get(id).d); cards.get(id).el.hidden = !ok; if (ok) shown++; }
+  $('#empty').hidden = ids.length > 0;
+  $('#stats').textContent = shown + ' of ' + ids.length + ' requests shown';
+  stats();
+}
+let lastSummary = null;
+function stats() {
+  const s = lastSummary; if (!s) return;
+  $('#stats').replaceChildren(h('span', null, $('#stats').textContent), ' | ',
+    h('span', {id: 'sum'}, 'errors ', h('b', null, s.errors), ', paired ok ', h('b', null, s.paired_ok), ', failed ', h('b', null, s.failed), ', pending ', h('b', null, s.pending)));
+}
+
+async function poll() {
+  if (printing || noPoll) return;
+  try {
+    const r = await fetch('/api/records?since=' + since + '&epoch=' + epoch, {cache: 'no-store'});
+    const data = await r.json();
+    if (printing) return;
+    if (data.epoch !== epoch) { recs.clear(); epoch = data.epoch; }
+    for (const it of data.records) {
+      const old = recs.get(it.d.id) || {};
+      if (it.raw) { old.raw = it.raw; old.pr = undefined; }
+      old.d = it.d; recs.set(it.d.id, old);
+    }
+    since = data.rev; lastSummary = data.summary;
+    render();
+  } catch (e) { /* proxy restarting; retry on next tick */ }
+}
+
+// ---- printing: expand everything, then restore
+function expandAll() {
+  for (let guard = 0; guard < 60; guard++) {
+    const ds = [...document.querySelectorAll('.card:not([hidden]) details:not([open])')];
+    if (!ds.length) break;
+    for (const d of ds) { fill(d); d.open = true; }
+  }
+}
+function setPrint(on) {
+  if (on === printing) return;
+  printing = on;
+  document.documentElement.classList.toggle('printing', on);
+  document.body.classList.toggle('printing', on);
+  if (on) expandAll();
+  else for (const d of document.querySelectorAll('.card details')) {
+    const k = d.getAttribute('data-k');
+    d.open = openState.has(k) ? openState.get(k) : d.getAttribute('data-def') === '1';
+  }
+}
+window.addEventListener('beforeprint', () => setPrint(true));
+window.addEventListener('afterprint', () => { setPrint(false); poll(); });
+
+$('#fErr').addEventListener('change', render);
+$('#fTool').addEventListener('change', render);
+$('#bClear').addEventListener('click', async () => { await fetch('/api/clear', {method: 'POST'}); recs.clear(); since = 0; epoch = 0; render(); poll(); });
+$('#bPdf').addEventListener('click', () => { setPrint(true); window.print(); });
+
+(async () => {
+  if (params.get('errors') === '1') $('#fErr').checked = true;
+  await poll();
+  if (params.get('tool')) { $('#fTool').value = params.get('tool'); render(); }
+  if (params.get('print') === '1') { noPoll = true; setPrint(true); document.title = 'print-ready'; }
+  else setInterval(poll, 1000);
+})();
+</script>
+</body>
+</html>

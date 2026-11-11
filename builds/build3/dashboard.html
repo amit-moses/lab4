@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Agent Traffic Monitor</title>
+<style>
+:root{--bg:#f5f6f8;--fg:#1c2230;--mut:#5c6678;--card:#fff;--bd:#d5d9e0;--sys:#7c4dff;--tools:#0b7a75;--hist:#6b7280;--new:#1565c0;--rep:#2e7d32;--err:#c62828;--warn:#b26a00;--ok:#2e7d32;--code:#eef0f4}
+@media (prefers-color-scheme:dark){:root{--bg:#14171d;--fg:#e4e7ee;--mut:#9aa3b5;--card:#1d222b;--bd:#343b48;--sys:#a98bff;--tools:#3cc4bb;--hist:#98a1b3;--new:#6ab0ff;--rep:#6fcf74;--err:#ff7b7b;--warn:#f0b050;--ok:#6fcf74;--code:#12151b}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,Segoe UI,sans-serif}
+header.top{position:sticky;top:0;z-index:5;background:var(--card);border-bottom:1px solid var(--bd);padding:8px 14px;display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+header.top h1{font-size:16px;margin:0 8px 0 0}
+button,select{font:inherit;padding:3px 10px;border:1px solid var(--bd);background:var(--card);color:var(--fg);border-radius:5px;cursor:pointer}
+.stats{color:var(--mut);margin-left:auto}
+main{padding:12px 14px;max-width:1200px;margin:0 auto}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:8px;margin:0 0 12px}
+.card.err{border-color:var(--err);border-left:5px solid var(--err)}
+.card>summary{padding:8px 12px;cursor:pointer;display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center}
+.card>.body{padding:4px 12px 12px}
+.id{font-weight:700}
+.badge{display:inline-block;padding:0 7px;border-radius:9px;border:1px solid var(--bd);font-size:12px;color:var(--mut)}
+.badge.err{color:var(--err);border-color:var(--err)}
+.badge.ok{color:var(--ok);border-color:var(--ok)}
+.badge.warn{color:var(--warn);border-color:var(--warn)}
+.badge.live{color:var(--new);border-color:var(--new)}
+.mut{color:var(--mut)}
+.sec{border-left:4px solid var(--hist);margin:8px 0;padding:4px 0 4px 10px}
+.sec.sys{border-color:var(--sys)}.sec.tools{border-color:var(--tools)}.sec.hist{border-color:var(--hist)}.sec.new{border-color:var(--new)}.sec.rep{border-color:var(--rep)}.sec.errs{border-color:var(--err)}
+.sec>summary,.sec>.t{font-weight:600;cursor:pointer}
+.sec.sys>summary,.sec.sys>.t{color:var(--sys)}.sec.tools>summary,.sec.tools>.t{color:var(--tools)}.sec.new>.t{color:var(--new)}.sec.rep>.t{color:var(--rep)}.sec.errs>.t{color:var(--err)}
+pre{background:var(--code);padding:8px;border-radius:5px;overflow:auto;white-space:pre-wrap;word-break:break-word;margin:4px 0;max-height:520px;font:12px/1.4 Consolas,monospace}
+details details{margin:3px 0}
+details details>summary{cursor:pointer;color:var(--mut)}
+.msg{border:1px solid var(--bd);border-radius:6px;padding:4px 8px;margin:5px 0}
+.msg.user{border-left:4px solid var(--new)}.msg.assistant{border-left:4px solid var(--rep)}.msg.system{border-left:4px solid var(--warn)}
+.role{font-size:12px;font-weight:700;text-transform:uppercase;color:var(--mut)}
+.blk{margin:3px 0}
+.kind{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--mut)}
+.reminder{border:1px dashed var(--warn);padding:3px 6px;border-radius:5px}
+.reminder .kind{color:var(--warn)}
+.call{border:1px solid var(--tools);border-radius:6px;padding:4px 8px;margin:5px 0}
+.call.failed{border-color:var(--err)}
+.call.okc{border-color:var(--ok)}
+.result{border:1px solid var(--bd);border-radius:6px;padding:4px 8px;margin:5px 0}
+.result.failed{border-color:var(--err)}
+.bar{display:flex;height:10px;border-radius:5px;overflow:hidden;background:var(--code);margin:4px 0}
+.bar i{display:block;height:100%}
+a.lnk{color:var(--new);cursor:pointer;text-decoration:underline}
+.flash{outline:3px solid var(--new)}
+.empty{color:var(--mut);padding:30px;text-align:center}
+@media print{
+ header.top{display:none}body{background:#fff;color:#000}main{max-width:none;padding:0}
+ .card{break-inside:auto;border-color:#888}pre{max-height:none;overflow:visible}
+ .sec>summary{list-style:none}
+}
+</style></head>
+<body>
+<header class="top">
+ <h1>Agent Traffic Monitor</h1>
+ <label><input type="checkbox" id="fErr"> Errors only</label>
+ <label>Tool <select id="fTool"><option value="">all tools</option></select></label>
+ <button id="bClear">Clear</button>
+ <button id="bPdf">Save PDF</button>
+ <span class="stats" id="stats"></span>
+</header>
+<main id="list"><div class="empty">Waiting for traffic. Point the agent at the proxy port.</div></main>
+<script>
+"use strict";
+const S = v => (v === null || v === undefined || v === false || (typeof v === "number" && isNaN(v))) ? "" : String(v);
+const esc = v => S(v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+const fmt = n => (n === null || n === undefined || isNaN(n)) ? "n/a" : Number(n).toLocaleString("en-US");
+const kb = n => n >= 1024 ? (n/1024).toFixed(1) + " KB" : S(n) + " B";
+const open = new Map();      // key -> bool, user open/closed state
+const details = new Map();   // id -> detail json
+const loading = new Set();
+const sigs = new Map();
+let data = {records: [], pairs: {}, summary: {}, cost_note: ""};
+let printing = false, firstRender = true;
+
+function isOpen(k, dflt){ return printing ? true : (open.has(k) ? open.get(k) : dflt); }
+function det(k, dflt, cls, summary, inner){
+  const f = printing ? ' data-f="1"' : "";
+  return `<details class="${cls}" data-k="${esc(k)}"${isOpen(k,dflt) ? " open" : ""}${f}><summary>${summary}</summary>${inner}</details>`;
+}
+function longText(k, text, label, limit){
+  text = S(text);
+  if (text.length <= (limit || 500)) return `<pre>${esc(text)}</pre>`;
+  const pv = esc(text.slice(0, 100).replace(/\s+/g, " "));
+  return det(k, false, "lt", `${esc(label || "text")}: ${pv}... <span class="mut">(${fmt(text.length)} chars, expand)</span>`, `<pre>${esc(text)}</pre>`);
+}
+function recLink(id){ return `<a class="lnk" data-go="${esc(id)}">request #${esc(id)}</a>`; }
+
+function pairBadge(p){
+  if (!p) return "";
+  if (!p.result) return `<span class="badge warn">result pending</span>`;
+  return p.error ? `<span class="badge err">failed</span>` : `<span class="badge ok">ok</span>`;
+}
+
+function renderBlock(r, mi, bi, b){
+  const k = `${r.id}:m${mi}:b${bi}`;
+  switch (b.type) {
+    case "text": return `<div class="blk">${longText(k, b.text, "text")}</div>`;
+    case "reminder": return `<div class="blk reminder"><span class="kind">injected system-reminder</span>${longText(k, b.text, "system-reminder", 300)}</div>`;
+    case "thinking": return `<div class="blk"><span class="kind">thinking</span>${longText(k, b.text, "thinking", 300)}</div>`;
+    case "tool_use": {
+      const p = data.pairs[b.id];
+      const cls = p && p.result ? (p.error ? "failed" : "okc") : "";
+      const link = p && p.result ? ` result in ${recLink(p.result)}` : "";
+      return `<div class="call ${cls}" id="tu-${r.id}-${esc(b.id)}"><span class="kind">tool call</span> <b>${esc(b.name)}</b> ${pairBadge(p)}${link} <span class="mut">${esc(b.id)}</span>${longText(k, b.input, "input", 300)}</div>`;
+    }
+    case "tool_result": {
+      const p = data.pairs[b.id];
+      const failed = b.is_error;
+      const from = p ? ` for ${esc(p.name)} called in ${recLink(p.call)}` : "";
+      return `<div class="result ${failed ? "failed" : ""}"><span class="kind">tool result</span> ${failed ? '<span class="badge err">error</span>' : '<span class="badge ok">ok</span>'}${from} <span class="mut">${esc(b.id)}</span>${longText(k, b.text, "result", 400)}</div>`;
+    }
+    default: return `<div class="blk"><span class="kind">${esc(b.type)}</span><pre>${esc(b.json)}</pre></div>`;
+  }
+}
+function renderMsg(r, mi, m){
+  const label = m.kind === "system" ? "system message" : m.role;
+  return `<div class="msg ${esc(m.kind)}"><div class="role">${esc(label)} <span class="mut">#${mi + 1}</span></div>${m.blocks.map((b, bi) => renderBlock(r, mi, bi, b)).join("")}</div>`;
+}
+
+function renderReply(r){
+  const rp = r.reply;
+  let h = "";
+  if (rp.thinking) h += `<div class="blk"><span class="kind">thinking</span>${longText(r.id + ":rthink", rp.thinking, "thinking", 300)}</div>`;
+  if (rp.text) h += longText(r.id + ":rtext", rp.text, "assistant text", 1500);
+  for (const [i, t] of rp.tools.entries()) {
+    const res = t.result;
+    const cls = res ? (res.error ? "failed" : "okc") : "";
+    let st;
+    if (!res) st = `<span class="badge warn">result pending</span>`;
+    else st = (res.error ? `<span class="badge err">failed</span>` : `<span class="badge ok">result ok</span>`) + ` ${recLink(res.rec)}`;
+    h += `<div class="call ${cls}"><span class="kind">tool call</span> <b>${esc(t.name)}</b> ${st} <span class="mut">${esc(t.id)}</span>`
+      + det(`${r.id}:rt${i}`, true, "inp", "input", `<pre>${esc(t.input)}</pre>`)
+      + (res ? det(`${r.id}:rr${i}`, false, "res", `result preview`, `<pre>${esc(res.preview)}</pre>`) : "")
+      + `</div>`;
+  }
+  if (!h) h = r.done ? `<span class="mut">(no assistant output)</span>` : `<span class="mut">waiting for reply...</span>`;
+  const meta = [rp.stop ? `stop: ${esc(rp.stop)}` : ""].filter(Boolean).join(" ");
+  return `<div class="sec rep"><div class="t">Model output ${r.done ? "" : '<span class="badge live">streaming</span>'} <span class="mut">${meta}</span></div>${h}</div>`;
+}
+
+function renderCard(r){
+  const D = details.get(r.id);
+  const k = "c" + r.id;
+  const tk = r.tokens || {};
+  const tokens = (tk.in === null && tk.out === null && tk.cr === null && tk.cw === null) ? "" :
+    `<span class="badge">in ${fmt(tk.in)}</span><span class="badge">out ${fmt(tk.out)}</span>` +
+    `<span class="badge">cache read ${fmt(tk.cr)}</span><span class="badge">cache write ${fmt(tk.cw)}</span>`;
+  const cost = (tk.in === null && tk.out === null && tk.cr === null && tk.cw === null) ? "" :
+    `<span class="badge" title="${esc(data.cost_note)}">${r.cost === null ? "cost n/a" : "~$" + r.cost.toFixed(4)} (est.)</span>`;
+  const stCls = r.status >= 400 || !r.status && r.done ? "err" : "ok";
+  const status = r.status ? `<span class="badge ${stCls}">${r.status}</span>` : (r.done ? `<span class="badge err">no response</span>` : `<span class="badge live">pending</span>`);
+  const lat = r.latency !== null ? `${fmt(r.latency)} ms` : "running";
+  const head = `<span class="id">#${r.id}</span><span class="mut">${esc(r.clock)}</span>`
+    + `<span class="badge">${esc(r.label)}</span><span>${esc(r.method)} ${esc(r.path)}</span>${status}`
+    + `${r.model ? `<span class="mut">${esc(r.model)}</span>` : ""}<span class="mut">${lat}${r.ttfb !== null ? " (first byte " + fmt(r.ttfb) + " ms)" : ""}</span>`
+    + tokens + cost
+    + (r.errors.length ? `<span class="badge err">${r.errors.length} error${r.errors.length > 1 ? "s" : ""}</span>` : "")
+    + r.tool_names.map(n => `<span class="badge">${esc(n)}</span>`).join("");
+  let body = "";
+  if (r.errors.length) body += `<div class="sec errs"><div class="t">Errors</div><ul>${r.errors.map(e => `<li>${esc(e)}</li>`).join("")}</ul></div>`;
+  if (r.has_detail) {
+    const n = r.new, sz = r.sizes;
+    let nt;
+    if (!n) nt = "";
+    else if (n.first) nt = "first request in this thread";
+    else if (n.diverged) nt = "history diverged (new session, subagent or compaction)";
+    else nt = `${n.count} new message${n.count === 1 ? "" : "s"}`;
+    if (n && !n.first) nt += (n.sys ? ", system changed" : ", system unchanged") + (n.tools ? ", tools changed" : ", tools unchanged");
+    body += `<div class="mut">New since previous: <b>${esc(nt)}</b> &middot; ${fmt(r.n_messages)} messages total</div>`;
+    const tot = Math.max(sz.system + sz.tools + sz.messages, 1);
+    body += `<div class="bar" title="request size breakdown"><i style="width:${sz.system / tot * 100}%;background:var(--sys)"></i><i style="width:${sz.tools / tot * 100}%;background:var(--tools)"></i><i style="width:${sz.messages / tot * 100}%;background:var(--new)"></i></div>`
+      + `<div class="mut">Size: <span style="color:var(--sys)">system ${kb(sz.system)}</span> &middot; <span style="color:var(--tools)">tools ${kb(sz.tools)}</span> &middot; <span style="color:var(--new)">messages ${kb(sz.messages)}</span> &middot; body ${kb(sz.total)}</div>`;
+  }
+  body += renderReply(r);
+  if (r.has_detail) {
+    if (!D) body += `<div class="mut">loading request detail...</div>`;
+    else {
+      const n = r.new || {start: 0};
+      body += `<div class="sec sys">${det(r.id + ":sys", false, "", `System instructions <span class="mut">(${fmt(D.system.length)} chars)</span>`, D.system ? `<pre>${esc(D.system)}</pre>` : `<span class="mut">(none)</span>`)}</div>`;
+      body += `<div class="sec tools">${det(r.id + ":tools", false, "", `Tool definitions <span class="mut">(${D.tools.length})</span>`,
+        D.tools.map((t, i) => det(`${r.id}:tool${i}`, false, "", `<b>${esc(t && t.name)}</b> <span class="mut">${esc(t && t.description ? String(t.description).slice(0, 90) : "")}</span>`, `<pre>${esc(JSON.stringify(t, null, 2))}</pre>`)).join("") || `<span class="mut">(none)</span>`)}</div>`;
+      const hist = D.messages.slice(0, n.start), fresh = D.messages.slice(n.start);
+      body += `<div class="sec hist">${det(r.id + ":hist", false, "", `Conversation history <span class="mut">(${hist.length} earlier message${hist.length === 1 ? "" : "s"})</span>`,
+        hist.map((m, i) => renderMsg(r, i, m)).join("") || `<span class="mut">(none)</span>`)}</div>`;
+      body += `<div class="sec new"><div class="t">New message${fresh.length === 1 ? "" : "s"} in this request (${fresh.length})</div>${fresh.map((m, i) => renderMsg(r, n.start + i, m)).join("")}</div>`;
+    }
+  }
+  const f = printing ? ' data-f="1"' : "";
+  return `<details class="card${r.errors.length ? " err" : ""}" id="card-${r.id}" data-k="${k}"${isOpen(k, true) ? " open" : ""}${f}><summary>${head}</summary><div class="body">${body}</div></details>`;
+}
+
+function visible(r){
+  if (document.getElementById("fErr").checked && !r.errors.length) return false;
+  const t = document.getElementById("fTool").value;
+  if (t && !r.tool_names.includes(t)) return false;
+  return true;
+}
+
+function render(force){
+  const list = document.getElementById("list");
+  const recs = data.records.slice().reverse().filter(visible);
+  if (!recs.length) {
+    list.innerHTML = `<div class="empty">${data.records.length ? "No requests match the filters." : "Waiting for traffic. Point the agent at the proxy port."}</div>`;
+    sigs.clear(); return;
+  }
+  const pairSig = JSON.stringify(data.pairs);
+  const frag = [];
+  let changed = force || list.querySelector(".empty") !== null;
+  const order = recs.map(r => r.id).join(",");
+  if (list.dataset.order !== order) changed = true;
+  const html = [];
+  for (const [i, r] of recs.entries()) {
+    const k = "c" + r.id;
+    if (!open.has(k)) open.set(k, i < 5 || !firstRender ? true : false);
+    const sig = JSON.stringify(r) + (details.has(r.id) ? "D" : "") + pairSig + (printing ? "P" : "");
+    let h = sigs.get(r.id);
+    if (!h || h.sig !== sig || force) { h = {sig, html: renderCard(r)}; sigs.set(r.id, h); changed = true; }
+    html.push(h.html);
+  }
+  if (!changed) return;
+  const sy = window.scrollY;
+  list.innerHTML = html.join("");
+  list.dataset.order = order;
+  window.scrollTo(0, sy);
+  firstRender = false;
+}
+
+async function fetchDetails(){
+  const need = data.records.filter(r => r.has_detail && !details.has(r.id) && !loading.has(r.id));
+  await Promise.all(need.map(async r => {
+    loading.add(r.id);
+    try { const d = await (await fetch("/api/req/" + r.id)).json(); details.set(r.id, d); } catch (e) {}
+    loading.delete(r.id);
+  }));
+}
+
+function updateTools(){
+  const sel = document.getElementById("fTool"), cur = sel.value;
+  const names = [...new Set(data.records.flatMap(r => r.tool_names))].sort();
+  if (sel.options.length - 1 !== names.length) {
+    sel.innerHTML = `<option value="">all tools</option>` + names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
+    sel.value = names.includes(cur) ? cur : "";
+  }
+}
+
+async function poll(){
+  if (printing) return;
+  try {
+    const d = await (await fetch("/api/records")).json();
+    if (printing) return;
+    data = d;
+    await fetchDetails();
+    if (printing) return;
+    updateTools();
+    const s = d.summary;
+    document.getElementById("stats").textContent =
+      `${s.cards} requests | ${s.paired_ok} tool calls ok | ${s.paired_failed} failed | ${s.error_cards} error cards`;
+    render(false);
+  } catch (e) {}
+}
+
+document.getElementById("list").addEventListener("toggle", ev => {
+  const el = ev.target;
+  if (!el.dataset || !el.dataset.k || el.dataset.f === "1" || printing) return;
+  open.set(el.dataset.k, el.open);
+}, true);
+document.getElementById("list").addEventListener("click", ev => {
+  const a = ev.target.closest("a[data-go]");
+  if (!a) return;
+  const el = document.getElementById("card-" + a.dataset.go);
+  if (el) { el.open = true; open.set("c" + a.dataset.go, true); el.scrollIntoView({block: "start"}); el.classList.add("flash"); setTimeout(() => el.classList.remove("flash"), 1500); }
+});
+document.getElementById("fErr").onchange = () => render(true);
+document.getElementById("fTool").onchange = () => render(true);
+document.getElementById("bClear").onclick = async () => {
+  await fetch("/api/clear", {method: "POST"});
+  details.clear(); sigs.clear(); open.clear(); data = {records: [], pairs: {}, summary: {}, cost_note: ""};
+  document.getElementById("list").dataset.order = ""; firstRender = true;
+  render(true); poll();
+};
+function beginPrint(){ if (printing) return; printing = true; render(true); }
+function endPrint(){ if (!printing) return; printing = false; render(true); poll(); }
+document.getElementById("bPdf").onclick = async () => {
+  printing = false; await fetchDetails(); beginPrint(); setTimeout(() => window.print(), 50);
+};
+window.addEventListener("beforeprint", beginPrint);
+window.addEventListener("afterprint", endPrint);
+poll(); setInterval(poll, 1000);
+</script>
+</body></html>
